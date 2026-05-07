@@ -1,0 +1,4 @@
+﻿ClinicId,   PatientId, TestCode, Result, Unit,  ReferenceRange, CollectedAt
+CLINIC_001, PAT_123,   HBA1C,    6.2,    %,     4.0-5.6,        2024-05-01T08:30:00
+CLINIC_001, PAT_124,   HBA1C,    5.1,    %,     4.0-5.6,        2024-05-01T09:00:00
+CLINIC_001, PAT_125,   GLUCOSE,  210,    mg/dL, 70-100,         2024-05-01T09:15:00
