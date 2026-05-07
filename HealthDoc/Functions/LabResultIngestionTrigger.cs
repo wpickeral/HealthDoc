@@ -1,15 +1,15 @@
-﻿using HealthDoc.Models;
+using HealthDoc.Models;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc;
+namespace HealthDoc.Functions;
 
-public class LabResultFileDetected
+public class LabResultIngestionTrigger
 {
-    private readonly ILogger<LabResultFileDetected> _logger;
+    private readonly ILogger<LabResultIngestionTrigger> _logger;
 
-    public LabResultFileDetected(ILogger<LabResultFileDetected> logger)
+    public LabResultIngestionTrigger(ILogger<LabResultIngestionTrigger> logger)
     {
         _logger = logger;
     }
@@ -19,9 +19,9 @@ public class LabResultFileDetected
     /// to the <c>lab-results-incoming</c> blob container and kicks off a new orchestration
     /// instance to validate, process, and store the batch.
     /// </summary>
-    [Function("LabResultFileDetected")]
-    public async Task Run([BlobTrigger("lab-results-incoming/{name}",
-            Connection = "StorageConnectionString")]
+    [Function("IngestLabResult")]
+    public async Task Run([BlobTrigger(AppConfig.Blob.IncomingTriggerPath,
+            Connection = AppConfig.Blob.Connection)]
         Stream stream,
         string name,
         [DurableClient] DurableTaskClient client)
@@ -29,11 +29,13 @@ public class LabResultFileDetected
         using var blobStreamReader = new StreamReader(stream);
 
         var content = await blobStreamReader.ReadToEndAsync();
-        _logger.LogInformation("C# Blob trigger function Processed blob\\n Name: {Name} \\n Data: {Content}", name,
-            content);
+
+        _logger.LogInformation("Lab result file detected: {FileName} — scheduling pipeline", name);
 
         var payload = new FilePayload() { FileName = name, Content = content };
 
-        await client.ScheduleNewOrchestrationInstanceAsync(nameof(ProcessLabFile), payload);
+        var instanceId = await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload);
+
+        _logger.LogInformation("Orchestration started for {FileName} — instance {InstanceId}", name, instanceId);
     }
 }

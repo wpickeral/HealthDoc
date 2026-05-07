@@ -5,27 +5,33 @@ using Microsoft.Extensions.Logging;
 
 namespace HealthDoc.Activities;
 
-public class StorageConfirmation
+public class StorageConfirmationValidator
 {
     private readonly CosmosClient _cosmosClient;
+    private readonly ILogger<StorageConfirmationValidator> _logger;
 
-    public StorageConfirmation(CosmosClient cosmosClient)
+    public StorageConfirmationValidator(CosmosClient cosmosClient, ILogger<StorageConfirmationValidator> logger)
     {
         _cosmosClient = cosmosClient;
+        _logger = logger;
     }
 
-    [Function("CheckStorageConfirmation")]
-    [CosmosDBOutput("LabResults", "ProcessingSummaries",
-        Connection = "CosmosDBConnectionString")]
+    /// <summary>
+    /// Polls Cosmos DB to confirm that the batch summary written by <c>StoreSummary</c>
+    /// is fully readable. Called repeatedly by the orchestrator monitor loop with a
+    /// 30-second durable timer between attempts. Returns the confirmed summary so the
+    /// output binding can upsert the updated status, or <c>null</c> if the document is
+    /// not yet visible — signaling the monitor to wait and try again.
+    /// </summary>
+    [Function(AppConfig.Activities.CheckStorageConfirmation)]
+    [CosmosDBOutput(AppConfig.CosmosDb.Database, AppConfig.CosmosDb.SummariesContainer,
+        Connection = AppConfig.CosmosDb.Connection)]
     public async Task<ProcessingSummary?> Run(
-        [ActivityTrigger] string batchId,
-        FunctionContext context)
+        [ActivityTrigger] string batchId)
     {
-        var logger = context.GetLogger("CheckStorageConfirmation");
-
         var container = _cosmosClient
-            .GetDatabase("LabResults")
-            .GetContainer("ProcessingSummaries");
+            .GetDatabase(AppConfig.CosmosDb.Database)
+            .GetContainer(AppConfig.CosmosDb.SummariesContainer);
 
         try
         {
@@ -36,14 +42,14 @@ public class StorageConfirmation
             var summary = response.Resource;
             summary.ConfirmationStatus = ConfirmationStatus.Confirmed;
 
-            logger.LogInformation("Batch {BatchId} confirmed", batchId);
+            _logger.LogInformation("Batch {BatchId} confirmed", batchId);
 
             return summary; // output binding handles the upsert — no serializer conflict
         }
         catch (CosmosException ex) when
             (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
-            logger.LogInformation("Batch {BatchId} not found yet", batchId);
+            _logger.LogInformation("Batch {BatchId} not found yet", batchId);
             return null;
         }
     }

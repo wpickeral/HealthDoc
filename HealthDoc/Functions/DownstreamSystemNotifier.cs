@@ -1,16 +1,16 @@
 ﻿using HealthDoc.Models;
+using Microsoft.ApplicationInsights;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Abstractions;
 
-namespace HealthDoc;
+namespace HealthDoc.Functions;
 
 public class DownstreamSystemNotifier
 {
     private readonly ILogger<DownstreamSystemNotifier> _logger;
-    private readonly ITelemetryClient _telemetryClient;
+    private readonly TelemetryClient _telemetryClient;
 
-    public DownstreamSystemNotifier(ILogger<DownstreamSystemNotifier> logger, ITelemetryClient telemetryClient)
+    public DownstreamSystemNotifier(ILogger<DownstreamSystemNotifier> logger, TelemetryClient telemetryClient)
     {
         _logger = logger;
         _telemetryClient = telemetryClient;
@@ -19,9 +19,9 @@ public class DownstreamSystemNotifier
     [Function("NotifyDownstreamSystems")]
     public async Task Run(
         [CosmosDBTrigger(
-            databaseName: "LabResults",
-            containerName: "ProcessingSummaries",
-            Connection = "CosmosDBConnection",
+            databaseName: AppConfig.CosmosDb.Database,
+            containerName: AppConfig.CosmosDb.SummariesContainer,
+            Connection = AppConfig.CosmosDb.Connection,
             LeaseContainerName = "leases",
             CreateLeaseContainerIfNotExists =  true)]
         IReadOnlyList<ProcessingSummary> summaries)

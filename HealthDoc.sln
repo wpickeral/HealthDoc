@@ -2,6 +2,10 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HealthDoc", "HealthDoc\HealthDoc.csproj", "{1000AFCA-243A-4001-9635-6F5595E25164}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HealthDoc.Tests", "HealthDoc.Tests\HealthDoc.Tests.csproj", "{3B83F0E0-883C-4B5B-8901-7D11AAB8471C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HealthDoc.Models", "HealthDoc.Models\HealthDoc.Models.csproj", "{E0C9B89A-CFB6-4C26-8E70-4B1404D30293}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -12,5 +16,13 @@ Global
 		{1000AFCA-243A-4001-9635-6F5595E25164}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1000AFCA-243A-4001-9635-6F5595E25164}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1000AFCA-243A-4001-9635-6F5595E25164}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3B83F0E0-883C-4B5B-8901-7D11AAB8471C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3B83F0E0-883C-4B5B-8901-7D11AAB8471C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3B83F0E0-883C-4B5B-8901-7D11AAB8471C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3B83F0E0-883C-4B5B-8901-7D11AAB8471C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E0C9B89A-CFB6-4C26-8E70-4B1404D30293}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E0C9B89A-CFB6-4C26-8E70-4B1404D30293}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E0C9B89A-CFB6-4C26-8E70-4B1404D30293}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E0C9B89A-CFB6-4C26-8E70-4B1404D30293}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

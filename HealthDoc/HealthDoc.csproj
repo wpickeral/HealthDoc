@@ -6,15 +6,24 @@
         <OutputType>Exe</OutputType>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <UserSecretsId>03a7f9be-9811-4c15-a0cf-c96cc669fffa</UserSecretsId>
     </PropertyGroup>
 
     <ItemGroup>
         <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+        <PackageReference Include="AzureFunctions.Worker.Extensions.DurableTask" Version="2.3.3" />
         <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="2.23.0"/>
+        <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.59.0" />
         <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="2.51.0"/>
         <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="2.50.0"/>
+        <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.CosmosDB" Version="4.15.0" />
         <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Http.AspNetCore" Version="2.1.0"/>
+        <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Storage.Blobs" Version="6.6.0" />
         <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.0.7"/>
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\HealthDoc.Models\HealthDoc.Models.csproj" />
     </ItemGroup>
 
 </Project>

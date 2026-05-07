@@ -2,17 +2,36 @@
 using System.IO;
 using System.Threading.Tasks;
 using HealthDoc.Models;
+using Microsoft.ApplicationInsights;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
 namespace HealthDoc.Activities;
 
-public abstract class ValidateFile
+public class FileValidator
 {
-    /// Validate — check columns, required fields, value ranges
-    [Function("ValidateFile")]
-    public static ValidationResult Validate([ActivityTrigger] FilePayload payload)
+    private readonly TelemetryClient _telemetryClient;
+    private readonly ILogger<FileValidator> _logger;
+
+    public FileValidator(TelemetryClient telemetryClient, ILogger<FileValidator> logger)
     {
+        _telemetryClient = telemetryClient;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Validates a lab result CSV before any records are processed. Checks that all
+    /// required columns are present and that every data row has a non-empty patient ID
+    /// and a numeric result value. A failed validation causes the orchestrator to abort
+    /// early and move the file to <c>lab-results-failed</c> without touching Cosmos DB.
+    /// </summary>
+    [Function(AppConfig.Activities.ValidateFile)]
+    public ValidationResult Validate([ActivityTrigger] FilePayload payload)
+    {
+        _logger.LogInformation("Validating {FileName}", payload.FileName);
+
+        ValidationResult validationResult = new ValidationResult();
+
         try
         {
             var errors = new List<string>();
@@ -33,15 +52,28 @@ public abstract class ValidateFile
                 if (!double.TryParse(cols[3], out _)) errors.Add($"Non-numeric Result: {cols[3]}");
             }
 
-            return new ValidationResult { IsValid = !errors.Any(), Errors = errors };
+            validationResult.IsValid = errors.Count == 0;
+            validationResult.Errors = errors;
+
+            if (validationResult.IsValid)
+                _logger.LogInformation("{FileName} passed validation", payload.FileName);
+            else
+                _logger.LogWarning("{FileName} failed validation — {ErrorCount} error(s): {Errors}",
+                    payload.FileName, errors.Count, string.Join("; ", errors));
         }
         catch (Exception e)
         {
-            return new ValidationResult()
+            validationResult.Errors.Add(e.Message);
+            validationResult.IsValid = false;
+
+            _telemetryClient.TrackEvent("FileValidationFailed", new Dictionary<string, string>
             {
-                IsValid = false,
-                Errors = [e.Message],
-            };
+                ["FileName"] = payload.FileName,
+                ["ErrorCount"] = validationResult.Errors.Count.ToString(),
+                ["Errors"] = string.Join(", ", validationResult.Errors)
+            });
         }
+
+        return validationResult;
     }
 }
