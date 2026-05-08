@@ -26,7 +26,7 @@ Azure Blob Storage ──── BlobTrigger ────► LabResultIngestionTr
                      ValidateFile            ParseFile
                     (invalid?)               (List<LabRecord>)
                           │                       │
-                          │ MoveFile               │  Fan-out
+                          │ MoveFile              │  Fan-out
                           ▼          ┌────────────┼────────────┐
                lab-results-failed    ▼            ▼            ▼
                                 ProcessRecord   ...      ProcessRecord
