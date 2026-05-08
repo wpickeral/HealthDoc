@@ -462,6 +462,8 @@ Select the **Upload Lab Results** operation → **Policies**.
 
         <!-- Limit each clinic to 10 uploads per minute -->
         <!-- counter-key uses the subscription ID so each clinic has its own counter -->
+        <!-- NOTE: rate-limit-by-key is not supported on the Consumption tier -->
+        <!-- Requires Developer tier or above — include here as a study reference -->
         <rate-limit-by-key
             calls="10"
             renewal-period="60"
