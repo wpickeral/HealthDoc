@@ -317,6 +317,26 @@ The gateway pattern: clinics talk to APIM, APIM talks to your Function App. The 
 
 ---
 
+### Public URL vs Internal URL — Hiding Implementation Details
+
+This is one of APIM's core value propositions. The URL a clinic uses and the URL APIM forwards to internally are completely independent:
+
+| | URL |
+|---|---|
+| **Client calls (public)** | `https://apim-health-doc-prod.azure-api.net/labs/upload` |
+| **APIM forwards to (internal)** | `https://health-doc-bhgtenhbddbmfefr.eastus-01.azurewebsites.net/api/upload` |
+
+The `/labs` prefix is a domain concept — it describes what the API does from the client's perspective. The `/api` prefix is an Azure Functions implementation detail. APIM maps between them so the two never leak into each other.
+
+This decoupling has real consequences:
+- You could migrate from Azure Functions to Azure Container Apps and clients would never know — just update the backend URL in APIM
+- You could version your API (`/labs/v2/...`) without changing your Function routes
+- The internal hostname, which exposes that you're running on Azure and reveals the region (`eastus`), is never visible to external partners
+
+In this project the mapping is configured by setting the **Web service URL** to `https://<func-app>.azurewebsites.net/api` — the Azure Functions route prefix is absorbed into the backend base URL once, so operation overrides stay clean (`/upload`, `/status/{id}`, `/results/{clinicId}`).
+
+---
+
 APIM sits in front of all three HTTP endpoints, adding subscription-key authentication, rate limiting, response caching, and a clean public URL that decouples clinics from the Function App's internal host key.
 
 **AZ-204 exam concepts covered:** products, subscriptions, named values, API-level policies, operation-level policies, `rate-limit-by-key`, `cache-lookup`/`cache-store`, `set-header`, `choose`/`return-response`.
