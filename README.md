@@ -375,8 +375,10 @@ Named values are APIM's encrypted key-value store. Policy XML references them as
 |---|---|
 | Display name | `Lab Results API` |
 | Name | `lab-results-api` |
-| Web service URL | `https://<your-func-app>.azurewebsites.net` |
+| Web service URL | `https://<your-func-app>.azurewebsites.net/api` |
 | API URL suffix | `labs` |
+
+Including `/api` in the Web service URL means the Azure Functions route prefix is set once here rather than repeated in every operation's backend URL override.
 
 All operations on this API are now accessible at `https://<apim>.azure-api.net/labs/...`.
 
@@ -391,7 +393,7 @@ All operations on this API are now accessible at `https://<apim>.azure-api.net/l
 | Display name | Upload Lab Results |
 | Method | `POST` |
 | URL | `/upload` |
-| Backend URL override | `/api/upload` |
+| Backend URL override | `/upload` |
 
 #### Operation 2 — Get Processing Status
 
@@ -400,7 +402,7 @@ All operations on this API are now accessible at `https://<apim>.azure-api.net/l
 | Display name | Get Processing Status |
 | Method | `GET` |
 | URL | `/status/{instanceId}` |
-| Backend URL override | `/api/status/{instanceId}` |
+| Backend URL override | `/status/{instanceId}` |
 
 #### Operation 3 — Get Lab Results
 
@@ -409,7 +411,7 @@ All operations on this API are now accessible at `https://<apim>.azure-api.net/l
 | Display name | Get Lab Results |
 | Method | `GET` |
 | URL | `/results/{clinicId}` |
-| Backend URL override | `/api/results/{clinicId}` |
+| Backend URL override | `/results/{clinicId}` |
 
 ---
 
