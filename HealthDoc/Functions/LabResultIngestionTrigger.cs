@@ -1,5 +1,6 @@
 using HealthDoc.Models;
 using Microsoft.Azure.Functions.Worker;
+using Microsoft.DurableTask;
 using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 
@@ -34,7 +35,32 @@ public class LabResultIngestionTrigger
 
         var payload = new FilePayload() { FileName = name, Content = content };
 
-        var instanceId = await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload);
+        var options = new StartOrchestrationOptions { InstanceId = name };
+
+        string instanceId;
+        try
+        {
+            instanceId = await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload, options);
+        }
+        catch (InvalidOperationException)
+        {
+            var existing = await client.GetInstanceAsync(name);
+
+            if (existing?.RuntimeStatus is OrchestrationRuntimeStatus.Running
+                                         or OrchestrationRuntimeStatus.Pending)
+            {
+                _logger.LogWarning(
+                    "{FileName} is already being processed — instance {InstanceId} still active, skipping duplicate",
+                    name, name);
+                return;
+            }
+
+            _logger.LogWarning("Prior instance found for {FileName} — purging and rescheduling", name);
+
+            await client.PurgeInstanceAsync(name);
+
+            instanceId = await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload, options);
+        }
 
         _logger.LogInformation("Orchestration started for {FileName} — instance {InstanceId}", name, instanceId);
     }
