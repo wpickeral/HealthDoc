@@ -507,7 +507,11 @@ Select the **Get Lab Results** operation → **Policies**.
         <base />
 
         <!-- Check cache before calling Function App -->
-        <!-- Results for a clinic are cached for 60 seconds by clinicId path segment -->
+        <!-- Cache key = full request URL by default, so /results/CLINIC_001 and      -->
+        <!-- /results/CLINIC_002 automatically get separate cache entries — no extra   -->
+        <!-- configuration needed because clinicId is already in the path.             -->
+        <!-- If clinicId were a query parameter (?clinicId=X) instead, you would need -->
+        <!-- to add <vary-by-query-parameter>clinicId</vary-by-query-parameter> here.  -->
         <cache-lookup vary-by-developer="false"
                       vary-by-developer-groups="false"
                       allow-private-response-caching="true">
