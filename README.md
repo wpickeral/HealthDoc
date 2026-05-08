@@ -11,10 +11,17 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 ## Architecture
 
 ```
-Partner Clinic
-    │
-    │  uploads lab_results_*.csv
-    ▼
+Partner Clinic  ──── POST /labs/upload ────► Azure API Management
+                     Content-Type: text/csv    (subscription key auth, rate limit,
+                     Ocp-Apim-Subscription-Key  x-functions-key injected)
+                                                        │
+                                                        ▼
+                                             UploadLabResultsEndpoint
+                                             (generates unique filename,
+                                              writes blob to lab-results-incoming)
+                                                        │
+                                                        │ blob write
+                                                        ▼
 Azure Blob Storage ──── BlobTrigger ────► LabResultIngestionTrigger
 (lab-results-incoming)                            │
                                                   │ ScheduleNewOrchestrationInstanceAsync
@@ -50,11 +57,17 @@ Azure Blob Storage ──── BlobTrigger ────► LabResultIngestionTr
                                                Cosmos DB ──── CosmosDBTrigger ────► NotifyDownstreamSystems
                                             (ProcessingSummaries)                   (App Insights telemetry)
 
-HTTP Client  ──── GET /api/status/{instanceId} ────► GetBatchStatus
-(caller)                                              (DurableClient — queries instance state)
-                                                      202 Accepted  → still running, poll again
-                                                      200 OK        → completed
-                                                      500           → failed / terminated
+Partner Clinic  ──── GET /labs/status/{instanceId} ────► Azure API Management
+                     GET /labs/results/{clinicId}                  │
+                     Ocp-Apim-Subscription-Key         ┌───────────┴───────────┐
+                                                       ▼                       ▼
+                                                GetBatchStatus        LabResultsEndpoint
+                                           (DurableClient —        (CosmosClient —
+                                            queries instance)       queries by clinicId)
+                                                       │
+                                           202 Accepted  → still running, poll again
+                                           200 OK        → completed
+                                           500           → failed / terminated
 ```
 
 ---
@@ -66,6 +79,7 @@ HTTP Client  ──── GET /api/status/{instanceId} ────► GetBatchS
 | **Azure Blob Storage** | Receives CSV uploads; triggers the pipeline; archives processed/failed files | Blob triggers, storage bindings, server-side copy |
 | **Azure Durable Functions** | Orchestrates the multi-step pipeline with state | Durable task framework |
 | **Azure Cosmos DB** | Persists processing summaries; polled for confirmation; triggers downstream notification | NoSQL output binding, SDK queries, CosmosDB trigger |
+| **Azure API Management** | Front door for the HTTP API surface — subscription key auth, rate limiting, named values, backend routing | APIM policies, products, subscriptions, named values |
 | **Application Insights** | Telemetry collection with sampling; business event tracking | Monitoring and diagnostics |
 
 ---
@@ -122,7 +136,7 @@ The `ConfirmationStatus` enum tracks lifecycle: `Unknown → Confirmed | TimedOu
 
 ### Pattern 4 — Async HTTP API (HTTP Polling Consumer)
 
-`GetBatchStatus` exposes a single HTTP endpoint that lets any caller check on an orchestration instance by its ID. It uses the `[DurableClient]` binding to call `GetInstanceAsync`, then maps the runtime status to an appropriate HTTP response:
+`GetBatchStatus` exposes a single HTTP endpoint that lets any caller check on an orchestration instance by its ID. Because the instance ID is set to the uploaded blob filename, callers already know it without a separate lookup — uploading `lab_results_2024_05_01.csv` produces an instance accessible at `GET /api/status/lab_results_2024_05_01.csv`. The function uses the `[DurableClient]` binding to call `GetInstanceAsync`, then maps the runtime status to an appropriate HTTP response:
 
 | Runtime status | HTTP response | Meaning |
 |---|---|---|
@@ -148,9 +162,11 @@ HealthDoc/
 │   ├── AppConfig.cs                        # Centralized const strings for containers, databases, connections
 │   ├── host.json                           # Application Insights sampling config
 │   ├── Functions/
+│   │   ├── UploadLabResultsEndpoint.cs     # HTTP POST /api/upload → writes blob → triggers pipeline
 │   │   ├── LabResultIngestionTrigger.cs    # BlobTrigger entry point → schedules orchestration
 │   │   ├── LabResultOrchestrator.cs        # Orchestrator (patterns 1–3)
 │   │   ├── BatchStatusEndpoint.cs          # HTTP GET /api/status/{instanceId} (pattern 4)
+│   │   ├── LabResultsEndpoint.cs           # HTTP GET /api/results/{clinicId} → Cosmos query
 │   │   └── DownstreamSystemNotifier.cs     # CosmosDBTrigger → App Insights telemetry
 │   └── Activities/
 │       ├── FileValidator.cs                # ValidateFile — checks headers and data rows
@@ -182,9 +198,9 @@ HealthDoc/
 
 ## Data Flow
 
-1. **Upload** — A partner clinic uploads a CSV to the `lab-results-incoming` blob container.
+1. **Upload** — A partner clinic POSTs a CSV file body to `POST /api/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes the blob directly to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client persists this ID to poll status later.
 
-2. **Trigger** — `LabResultIngestionTrigger` fires via `BlobTrigger`. It reads the blob content, wraps it in a `FilePayload`, and schedules a new `LabResultOrchestrator` instance.
+2. **Trigger** — `LabResultIngestionTrigger` fires automatically via `BlobTrigger` when the blob lands. It reads the blob content, wraps it in a `FilePayload`, and schedules a new `LabResultOrchestrator` instance using the blob filename as the deterministic instance ID. If an instance with that ID is still running or pending, the duplicate upload is skipped. If the prior instance has already reached a terminal state, it is purged and a fresh instance is scheduled in its place.
 
 3. **Validate** — The orchestrator calls `ValidateFile`. If required columns are missing or any `Result` field is non-numeric, it calls `MoveFile` to archive the blob to `lab-results-failed` and returns a failed `ProcessingSummary`. No records are processed.
 
@@ -258,7 +274,7 @@ Blob Storage containers required:
 Cosmos DB setup required:
 - Database: `LabResults`
 - Container: `ProcessingSummaries` with partition key `/id`
-- Container: `LabResultRecords` with partition key `/id`
+- Container: `LabResultRecords` with partition key `/ClinicId`
 
 ```bash
 dotnet restore
@@ -284,6 +300,309 @@ dotnet test HealthDoc.Tests/HealthDoc.Tests.csproj
 
 ---
 
+## Azure API Management
+
+### Why APIM Exists — The Core Problem It Solves
+
+Without APIM, your Function App endpoints are exposed directly to the outside world. Any clinic that knows the URL and function key can call them. In a real healthcare system this creates four problems:
+
+| Problem | Without APIM | With APIM |
+|---|---|---|
+| **Centralized auth** | Revoking one clinic's access means rotating the Function key — which breaks every other clinic | Each clinic gets its own subscription key; revoke one without touching others |
+| **Rate limiting** | A misbehaving clinic can flood the system with uploads | Per-subscription rate limits enforced at the gateway before requests reach your code |
+| **Visibility** | No easy way to see which clinic is calling which endpoint, how often, or whether they're succeeding | Every request logged with subscription context; Analytics blade shows call volume, latency, errors per operation |
+| **Direct exposure** | External partners know your internal infrastructure details — Azure Functions URLs, routes, versions | The Function App URL becomes an internal implementation detail; clinics only ever see the APIM gateway URL |
+
+The gateway pattern: clinics talk to APIM, APIM talks to your Function App. The `x-functions-key` header is injected by policy — external partners never see it.
+
+---
+
+APIM sits in front of all three HTTP endpoints, adding subscription-key authentication, rate limiting, response caching, and a clean public URL that decouples clinics from the Function App's internal host key.
+
+**AZ-204 exam concepts covered:** products, subscriptions, named values, API-level policies, operation-level policies, `rate-limit-by-key`, `cache-lookup`/`cache-store`, `set-header`, `choose`/`return-response`.
+
+---
+
+### Step 1 — Create the APIM Instance
+
+In the Azure portal: search **API Management** → **Create**.
+
+| Field | Value |
+|---|---|
+| Subscription / Resource group | your existing RG |
+| Resource name | `apim-healthdoc-dev` (must be globally unique) |
+| Region | same as your Function App |
+| Pricing tier | **Consumption** |
+| Organization name | HealthDoc |
+| Administrator email | your email |
+
+> Consumption tier is pay-per-call (like Azure Functions) — no hourly charge, ideal for study. Provisioning takes ~5 minutes.
+
+**AZ-204 SKU comparison — know this for the exam:**
+
+| Tier | Cold starts | VNet support | Scale | Best for |
+|---|---|---|---|---|
+| Consumption | Yes (~2 s) | No | Auto | Dev, testing, low traffic |
+| Developer | No | Yes (ext/int) | Manual | Non-production exploration |
+| Basic | No | No | Manual | Low-traffic production |
+| Standard | No | No | Manual | Medium production |
+| Premium | No | Yes (ext/int) | Manual + zone redundancy | Enterprise production |
+
+---
+
+### Step 2 — Create a Named Value for Your Function Key
+
+Named values are APIM's encrypted key-value store. Policy XML references them as `{{Name}}` — the value is never exposed to callers.
+
+1. In your APIM instance → **Named values** → **Add**
+2. Fill in:
+
+| Field | Value |
+|---|---|
+| Name | `FunctionAppKey` |
+| Display name | `FunctionAppKey` |
+| Type | **Secret** |
+| Value | your Function App host key (Function App → **App keys** → `default`) |
+
+---
+
+### Step 3 — Create the Lab Results API
+
+1. **APIs** → **Add API** → **HTTP**
+2. Fill in:
+
+| Field | Value |
+|---|---|
+| Display name | `Lab Results API` |
+| Name | `lab-results-api` |
+| Web service URL | `https://<your-func-app>.azurewebsites.net` |
+| API URL suffix | `labs` |
+
+All operations on this API are now accessible at `https://<apim>.azure-api.net/labs/...`.
+
+---
+
+### Step 4 — Add the Three Operations
+
+#### Operation 1 — Upload Lab Results
+
+| Field | Value |
+|---|---|
+| Display name | Upload Lab Results |
+| Method | `POST` |
+| URL | `/upload` |
+| Backend URL override | `/api/upload` |
+
+#### Operation 2 — Get Processing Status
+
+| Field | Value |
+|---|---|
+| Display name | Get Processing Status |
+| Method | `GET` |
+| URL | `/status/{instanceId}` |
+| Backend URL override | `/api/status/{instanceId}` |
+
+#### Operation 3 — Get Lab Results
+
+| Field | Value |
+|---|---|
+| Display name | Get Lab Results |
+| Method | `GET` |
+| URL | `/results/{clinicId}` |
+| Backend URL override | `/api/results/{clinicId}` |
+
+---
+
+### Step 5 — Apply Policies
+
+#### API-level policy (applies to all three operations)
+
+Select the API → **Design** tab → **All operations** → **Policies** (the `</>` icon).
+
+```xml
+<policies>
+    <inbound>
+        <base />
+
+        <!-- Authenticate to Function App using stored named value -->
+        <!-- Clinic never sees this key — it stays inside APIM -->
+        <set-header name="x-functions-key" exists-action="override">
+            <value>{{FunctionAppKey}}</value>
+        </set-header>
+
+        <!-- Tag every request with the clinic's subscription ID for tracing -->
+        <set-header name="x-clinic-id" exists-action="override">
+            <value>@(context.Subscription.Id)</value>
+        </set-header>
+
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <!-- Strip internal headers before returning response to clinic -->
+        <set-header name="x-functions-key" exists-action="delete" />
+        <set-header name="x-powered-by" exists-action="delete" />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
+```
+
+#### Operation-level policy — Upload only (rate limiting + size guard)
+
+Select the **Upload Lab Results** operation → **Policies**.
+
+```xml
+<policies>
+    <inbound>
+        <base />
+
+        <!-- Limit each clinic to 10 uploads per minute -->
+        <!-- counter-key uses the subscription ID so each clinic has its own counter -->
+        <rate-limit-by-key
+            calls="10"
+            renewal-period="60"
+            counter-key="@(context.Subscription.Id)"
+            increment-condition="@(context.Response.StatusCode == 200)"
+        />
+
+        <!-- Reject requests larger than 10 MB — protect against abuse -->
+        <choose>
+            <when condition="@(context.Request.Headers.GetValueOrDefault(
+                    &quot;Content-Length&quot;, &quot;0&quot;).AsInteger() > 10485760)">
+                <return-response>
+                    <set-status code="413" reason="Payload Too Large" />
+                    <set-body>{"error": "File exceeds maximum size of 10MB"}</set-body>
+                </return-response>
+            </when>
+        </choose>
+
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
+```
+
+#### Operation-level policy — Get Lab Results (caching)
+
+Select the **Get Lab Results** operation → **Policies**.
+
+> **Note — Consumption tier limitation:** `cache-lookup` / `cache-store` use APIM's built-in in-memory cache, which is **not available on the Consumption tier**. On Consumption, these policies are silently ignored unless you configure an external Azure Redis Cache under APIM → **External cache**. The policy is included here as a study reference — it would work as-is on Developer tier or above.
+
+```xml
+<policies>
+    <inbound>
+        <base />
+
+        <!-- Check cache before calling Function App -->
+        <!-- Results for a clinic are cached for 60 seconds by clinicId path segment -->
+        <cache-lookup vary-by-developer="false"
+                      vary-by-developer-groups="false"
+                      allow-private-response-caching="true">
+        </cache-lookup>
+
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+
+        <!-- Store the response in cache for 60 seconds -->
+        <cache-store duration="60" />
+
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
+```
+
+---
+
+### Step 6 — Create a Product and Subscription
+
+**Create the product:**
+
+1. **Products** → **Add**
+2. Fill in:
+
+| Field | Value |
+|---|---|
+| Display name | `Clinic Standard` |
+| Id | `clinic-standard` |
+| Requires subscription | ✅ checked |
+| Requires approval | unchecked |
+| State | Published |
+
+3. Under **APIs**, add **Lab Results API** to the product.
+
+**Create a test subscription:**
+
+1. **Subscriptions** → **Add**
+2. Fill in:
+
+| Field | Value |
+|---|---|
+| Name | `CLINIC_001 Test` |
+| Scope | Product → `Clinic Standard` |
+
+3. Save, then click **...** → **Show/hide keys** → copy the primary key.
+
+---
+
+### Step 7 — Test Through APIM
+
+Use the built-in APIM test console (**APIs** → **Lab Results API** → **Test** tab) or Postman.
+
+**Upload a CSV:**
+
+```
+POST https://<apim>.azure-api.net/labs/upload
+Ocp-Apim-Subscription-Key: <your-subscription-key>
+Content-Type: text/csv
+
+ClinicId,PatientId,TestCode,Result,Unit,ReferenceRange,CollectedAt
+CLINIC_001,PAT_123,HBA1C,6.2,%,4.0-5.6,2024-05-01T08:30:00
+CLINIC_001,PAT_124,HBA1C,5.1,%,4.0-5.6,2024-05-01T09:00:00
+CLINIC_001,PAT_125,GLUCOSE,210,mg/dL,70-100,2024-05-01T09:15:00
+```
+
+Response `201 Created`:
+```json
+{ "instanceId": "lab-results-20240501143022-a3f9b21c.csv" }
+```
+
+**Poll status** (use the `instanceId` from the upload response):
+
+```
+GET https://<apim>.azure-api.net/labs/status/lab-results-20240501143022-a3f9b21c.csv
+Ocp-Apim-Subscription-Key: <your-subscription-key>
+```
+
+Returns `202 Accepted` while running, `200 OK` with `ProcessingSummary` JSON when complete.
+
+**Query results for the clinic:**
+
+```
+GET https://<apim>.azure-api.net/labs/results/CLINIC_001
+Ocp-Apim-Subscription-Key: <your-subscription-key>
+```
+
+**Verify rate limiting** — send the upload request 11+ times within a minute; calls beyond 10 should return `429 Too Many Requests`.
+
+---
+
 ## AZ-204 Concepts Checklist
 
 - [ ] **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
@@ -301,3 +620,6 @@ dotnet test HealthDoc.Tests/HealthDoc.Tests.csproj
 - [ ] **Application Insights** — sampling config in `host.json`; `TelemetryClient` for custom business events in `FileValidator.cs` and `DownstreamSystemNotifier.cs`
 - [ ] **Centralized configuration** — `AppConfig.cs` (`const` strings required for C# attribute parameters at compile time; `Metrics` nested class centralizes metric names and dimension keys)
 - [ ] **Structured logging** — `ILogger<T>` injected throughout all activities and orchestrator; 8+ log points across the pipeline
+- [ ] **HTTP trigger (upload)** — `UploadLabResultsEndpoint.cs`; accepts CSV body, generates filename, writes to Blob Storage via `BlobServiceClient`, returns `instanceId`
+- [ ] **API Management** — Consumption SKU; named values, product, subscription, three operations
+- [ ] **APIM policies** — API-level: `set-header` (key injection, clinic-id tagging), outbound header cleanup; operation-level: `rate-limit-by-key`, `choose`/`return-response` size guard, `cache-lookup`/`cache-store`
