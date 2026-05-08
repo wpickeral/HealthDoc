@@ -466,16 +466,16 @@ Select the **Upload Lab Results** operation → **Policies**.
             calls="10"
             renewal-period="60"
             counter-key="@(context.Subscription.Id)"
-            increment-condition="@(context.Response.StatusCode == 200)"
+            increment-condition="@(context.Response.StatusCode == 201)"
         />
 
-        <!-- Reject requests larger than 10 MB — protect against abuse -->
+        <!-- Reject requests that are not CSV -->
+        <!-- Content-Length is unreliable for streaming uploads — validate Content-Type instead -->
         <choose>
-            <when condition="@(context.Request.Headers.GetValueOrDefault(
-                    &quot;Content-Length&quot;, &quot;0&quot;).AsInteger() > 10485760)">
+            <when condition='@(!context.Request.Headers.GetValueOrDefault("Content-Type", "").Contains("text/csv"))'>
                 <return-response>
-                    <set-status code="413" reason="Payload Too Large" />
-                    <set-body>{"error": "File exceeds maximum size of 10MB"}</set-body>
+                    <set-status code="415" reason="Unsupported Media Type" />
+                    <set-body>Content-Type must be text/csv</set-body>
                 </return-response>
             </when>
         </choose>
