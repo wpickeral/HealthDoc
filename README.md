@@ -499,7 +499,7 @@ Select the **Upload Lab Results** operation → **Policies**.
 
 Select the **Get Lab Results** operation → **Policies**.
 
-> **Note — Consumption tier limitation:** `cache-lookup` / `cache-store` use APIM's built-in in-memory cache, which is **not available on the Consumption tier**. On Consumption, these policies are silently ignored unless you configure an external Azure Redis Cache under APIM → **External cache**. The policy is included here as a study reference — it would work as-is on Developer tier or above.
+> **Note — Consumption tier:** `cache-lookup` / `cache-store` are supported on all tiers including Consumption, but the Consumption tier has no built-in cache. Without an external Redis Cache configured (APIM → **External cache**), these policies are accepted but silently do nothing. To enable caching on Consumption, provision an Azure Cache for Redis and link it under External cache. On Developer tier and above the built-in cache works with no additional setup.
 
 ```xml
 <policies>
