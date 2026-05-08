@@ -33,8 +33,10 @@ public class LabResultsEndpoint
         var query = new QueryDefinition("SELECT * FROM c WHERE c.ClinicId = @clinicId")
             .WithParameter("@clinicId", clinicId);
 
+        var options = new QueryRequestOptions { PartitionKey = new PartitionKey(clinicId) };
+
         var records = new List<ProcessedRecord>();
-        using var feed = container.GetItemQueryIterator<ProcessedRecord>(query);
+        using var feed = container.GetItemQueryIterator<ProcessedRecord>(query, requestOptions: options);
         while (feed.HasMoreResults)
         {
             var page = await feed.ReadNextAsync();
