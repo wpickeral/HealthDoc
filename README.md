@@ -561,6 +561,7 @@ Select the **Get Lab Results** operation → **Policies**.
 | Field | Value |
 |---|---|
 | Name | `clinic-001-test` |
+| Display name | `CLINIC_001 Test` |
 | Scope | Product → `Clinic Standard` |
 
 3. Save, then click **...** → **Show/hide keys** → copy the primary key.
