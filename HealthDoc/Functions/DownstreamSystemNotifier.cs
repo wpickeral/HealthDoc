@@ -16,7 +16,7 @@ public class DownstreamSystemNotifier
         _telemetryClient = telemetryClient;
     }
 
-    [Function("NotifyDownstreamSystems")]
+    [Function(AppConfig.Activities.NotifyDownstreamSystems)]
     public async Task Run(
         [CosmosDBTrigger(
             databaseName: AppConfig.CosmosDb.Database,

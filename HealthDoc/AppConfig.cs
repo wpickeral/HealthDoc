@@ -24,14 +24,15 @@ public static class AppConfig
         // + concatenation is required — string interpolation ($"...") is not valid on const declarations
         private const string Prefix = "LabResultOrchestrator_";
 
-        public const string ValidateFile             = Prefix + "ValidateFile";
-        public const string ParseFile                = Prefix + "ParseFile";
-        public const string ProcessRecord            = Prefix + "ProcessRecord";
-        public const string StoreSummary             = Prefix + "StoreSummary";
-        public const string StoreRecords             = Prefix + "StoreRecords";
+        public const string ValidateFile = Prefix + "ValidateFile";
+        public const string ParseFile = Prefix + "ParseFile";
+        public const string ProcessRecord = Prefix + "ProcessRecord";
+        public const string StoreSummary = Prefix + "StoreSummary";
+        public const string StoreRecords = Prefix + "StoreRecords";
         public const string CheckStorageConfirmation = Prefix + "CheckStorageConfirmation";
-        public const string WriteTimeoutSummary      = Prefix + "WriteTimeoutSummary";
-        public const string MoveFile                 = Prefix + "MoveFile";
+        public const string WriteTimeoutSummary = Prefix + "WriteTimeoutSummary";
+        public const string MoveFile = Prefix + "MoveFile";
+        public const string NotifyDownstreamSystems = Prefix + "NotifyDownstreamSystems";
     }
 
     public static class Metrics
