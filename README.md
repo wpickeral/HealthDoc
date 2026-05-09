@@ -734,7 +734,9 @@ In Azure Portal → APIM → Named values, add:
    - **List Failed Files**: `GET /labs/failed-files` → backend `GET /api/blobs/failed`
    - **Get Lab Results**: `GET /labs/results/{clinicId}` → backend `GET /api/results/{clinicId}` (reuse)
 
-3. Set inbound policy on the product (or per operation):
+3. Set inbound policy **on the product** — not on the API:
+
+> **Important:** This policy must be applied at the product level, not the API level. API-level policies run for every request regardless of which product it came through — placing `validate-jwt` there would require external clinics to present a JWT token in addition to their subscription key, breaking their access. Product-level policies only run for requests that arrive through that specific product, keeping the two access models independent.
 
 ```xml
 <validate-jwt header-name="Authorization"
