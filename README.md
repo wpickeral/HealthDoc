@@ -585,6 +585,7 @@ Select the **Get Lab Results** operation → **Policies**.
 |---|---|
 | Display name | `Clinic Standard` |
 | Id | `clinic-standard` |
+| Description | `Standard access tier for registered clinics. Provides authenticated upload, status polling, and results retrieval. Each clinic receives a unique subscription key.` |
 | Requires subscription | ✅ checked |
 | Requires approval | unchecked |
 | State | Published |
@@ -725,6 +726,7 @@ In Azure Portal → APIM → Named values, add:
 
 1. APIM → Products → Add
    - Name: `Internal Dashboard`
+   - Description: `Internal access for authenticated staff. Provides read access to processed results and failed file inspection. Secured via Azure AD JWT validation — no subscription key required.`
    - `subscriptionRequired`: **off**
    - Published: on
 
