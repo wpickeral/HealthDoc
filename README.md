@@ -199,7 +199,7 @@ HealthDoc/
 
 ## Data Flow
 
-1. **Upload** — A partner clinic POSTs a CSV file body to `POST /api/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes the blob directly to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client persists this ID to poll status later.
+1. **Upload** — A partner clinic POSTs a CSV file body to `POST /labs/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes the blob directly to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client persists this ID to poll status later.
 
 2. **Trigger** — `LabResultIngestionTrigger` fires automatically via `BlobTrigger` when the blob lands. It reads the blob content, wraps it in a `FilePayload`, and schedules a new `LabResultOrchestrator` instance using the blob filename as the deterministic instance ID (the same value returned to the client as `instanceId`). If an instance with that ID is still running or pending, the duplicate upload is skipped. If the prior instance has already reached a terminal state, it is purged and a fresh instance is scheduled in its place.
 
