@@ -1,10 +1,23 @@
 # HealthDoc
 
-A regional healthcare network receives lab result CSV files from partner clinics daily. Previously, a staff member manually downloaded each file, validated it, entered results into the system, and emailed a confirmation back to the clinic — a process that was slow, error-prone, and impossible to scale. HealthDoc replaces that workflow with a fully automated ingestion pipeline: a CSV upload to Azure Blob Storage triggers an Azure Durable Functions orchestration that validates, parses, processes, stores, and confirms each batch without human intervention.
+A regional healthcare network receives lab result CSV files from partner clinics daily. Previously, a staff member manually downloaded each file, validated it, entered results into the system, and emailed a confirmation back to the clinic — a process that was slow, error-prone, and impossible to scale. HealthDoc replaces that workflow with a fully automated ingestion pipeline: partner clinics POST CSV files to an HTTP endpoint through Azure API Management, which triggers an Azure Durable Functions orchestration that validates, parses, processes, stores, and confirms each batch without human intervention.
 
 Built as an AZ-204 exam study project. Every section of this README maps to an exam topic.
 
 Co-authored with [Claude](https://claude.ai) (Anthropic).
+
+---
+
+## Azure Services
+
+| Service | Role in This Project | AZ-204 Topic |
+|---|---|---|
+| **Azure API Management** | Front door for the HTTP API surface — subscription key auth, rate limiting, named values, backend routing | APIM policies, products, subscriptions, named values |
+| **Azure Functions** | HTTP upload endpoint, blob trigger, orchestrator, activity functions, Cosmos DB trigger | Isolated worker model, HTTP triggers, blob triggers, output bindings |
+| **Azure Durable Functions** | Orchestrates the multi-step pipeline with state | Function chaining, fan-out/fan-in, monitor pattern, async HTTP API |
+| **Azure Blob Storage** | Receives uploaded CSVs internally; archives processed/failed files | Blob triggers, storage bindings, server-side copy |
+| **Azure Cosmos DB** | Persists processing summaries and lab records; triggers downstream notification | NoSQL output binding, SDK queries, CosmosDB trigger |
+| **Application Insights** | Telemetry collection with sampling; business event tracking | Monitoring and diagnostics |
 
 ---
 
@@ -72,18 +85,6 @@ Partner Clinic  ──── GET /labs/status/{instanceId} ────► Azure
 
 ---
 
-## Azure Services
-
-| Service | Role in This Project | AZ-204 Topic |
-|---|---|---|
-| **Azure Blob Storage** | Receives CSV uploads; triggers the pipeline; archives processed/failed files | Blob triggers, storage bindings, server-side copy |
-| **Azure Durable Functions** | Orchestrates the multi-step pipeline with state | Durable task framework |
-| **Azure Cosmos DB** | Persists processing summaries; polled for confirmation; triggers downstream notification | NoSQL output binding, SDK queries, CosmosDB trigger |
-| **Azure API Management** | Front door for the HTTP API surface — subscription key auth, rate limiting, named values, backend routing | APIM policies, products, subscriptions, named values |
-| **Application Insights** | Telemetry collection with sampling; business event tracking | Monitoring and diagnostics |
-
----
-
 ## Durable Functions Patterns
 
 Patterns 1–3 are implemented inside `LabResultOrchestrator.cs`. Pattern 4 is a standalone HTTP function in `BatchStatusEndpoint.cs`.
@@ -136,7 +137,7 @@ The `ConfirmationStatus` enum tracks lifecycle: `Unknown → Confirmed | TimedOu
 
 ### Pattern 4 — Async HTTP API (HTTP Polling Consumer)
 
-`GetBatchStatus` exposes a single HTTP endpoint that lets any caller check on an orchestration instance by its ID. Because the instance ID is set to the uploaded blob filename, callers already know it without a separate lookup — uploading `lab_results_2024_05_01.csv` produces an instance accessible at `GET /api/status/lab_results_2024_05_01.csv`. The function uses the `[DurableClient]` binding to call `GetInstanceAsync`, then maps the runtime status to an appropriate HTTP response:
+`GetBatchStatus` exposes a single HTTP endpoint that lets any caller check on an orchestration instance by its ID. The instance ID is the generated blob filename returned by `UploadLabResultsEndpoint` in the upload response — the client receives it as `instanceId` and is responsible for persisting it to poll status later. The function uses the `[DurableClient]` binding to call `GetInstanceAsync`, then maps the runtime status to an appropriate HTTP response:
 
 | Runtime status | HTTP response | Meaning |
 |---|---|---|
@@ -200,7 +201,7 @@ HealthDoc/
 
 1. **Upload** — A partner clinic POSTs a CSV file body to `POST /api/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes the blob directly to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client persists this ID to poll status later.
 
-2. **Trigger** — `LabResultIngestionTrigger` fires automatically via `BlobTrigger` when the blob lands. It reads the blob content, wraps it in a `FilePayload`, and schedules a new `LabResultOrchestrator` instance using the blob filename as the deterministic instance ID. If an instance with that ID is still running or pending, the duplicate upload is skipped. If the prior instance has already reached a terminal state, it is purged and a fresh instance is scheduled in its place.
+2. **Trigger** — `LabResultIngestionTrigger` fires automatically via `BlobTrigger` when the blob lands. It reads the blob content, wraps it in a `FilePayload`, and schedules a new `LabResultOrchestrator` instance using the blob filename as the deterministic instance ID (the same value returned to the client as `instanceId`). If an instance with that ID is still running or pending, the duplicate upload is skipped. If the prior instance has already reached a terminal state, it is purged and a fresh instance is scheduled in its place.
 
 3. **Validate** — The orchestrator calls `ValidateFile`. If required columns are missing or any `Result` field is non-numeric, it calls `MoveFile` to archive the blob to `lab-results-failed` and returns a failed `ProcessingSummary`. No records are processed.
 
@@ -267,7 +268,7 @@ Rows 1 and 3 will be flagged `IsAbnormal = true` (6.2 > 5.6 and 210 > 100).
 ```
 
 Blob Storage containers required:
-- `lab-results-incoming` — drop CSV files here to trigger the pipeline
+- `lab-results-incoming` — upload endpoint writes blobs here; BlobTrigger fires automatically
 - `lab-results-processed` — successfully processed files are moved here
 - `lab-results-failed` — files that fail validation are moved here
 
@@ -283,7 +284,22 @@ cd HealthDoc
 func start --port 7220
 ```
 
-Upload `lab_results_2024_05_01.csv` to the `lab-results-incoming` blob container to trigger a run.
+Trigger a run by POSTing a CSV to the upload endpoint:
+
+```bash
+curl -X POST http://localhost:7220/api/upload \
+  -H "Content-Type: text/csv" \
+  -H "x-functions-key: <your-local-function-key>" \
+  --data-binary @lab_results_2024_05_01.csv
+```
+
+The response returns the `instanceId` to use when polling status:
+
+```json
+{
+    "instanceId": "lab-results-20260508213642-8582e72b.csv"
+}
+```
 
 ---
 
@@ -609,7 +625,9 @@ CLINIC_001,PAT_125,GLUCOSE,210,mg/dL,70-100,2024-05-01T09:15:00
 
 Response `201 Created`:
 ```json
-{ "instanceId": "lab-results-20240501143022-a3f9b21c.csv" }
+{
+    "instanceId": "lab-results-20260508213642-8582e72b.csv"
+}
 ```
 
 **Poll status** (use the `instanceId` from the upload response):
