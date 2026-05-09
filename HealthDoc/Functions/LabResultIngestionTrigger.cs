@@ -37,10 +37,9 @@ public class LabResultIngestionTrigger
 
         var options = new StartOrchestrationOptions { InstanceId = name };
 
-        string instanceId;
         try
         {
-            instanceId = await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload, options);
+            await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload, options);
         }
         catch (InvalidOperationException)
         {
@@ -59,9 +58,9 @@ public class LabResultIngestionTrigger
 
             await client.PurgeInstanceAsync(name);
 
-            instanceId = await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload, options);
+            await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload, options);
         }
 
-        _logger.LogInformation("Orchestration started for {FileName} — instance {InstanceId}", name, instanceId);
+        _logger.LogInformation("Orchestration started for {FileName} — instance {InstanceId}", name, name);
     }
 }
