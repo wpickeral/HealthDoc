@@ -650,6 +650,127 @@ Ocp-Apim-Subscription-Key: <your-subscription-key>
 
 ---
 
+## Azure Security (AZ-204 — Implement Azure Security)
+
+This section adds MSAL-authenticated access for internal users via a React SPA, plus JWT validation on APIM so the same Azure AD token authorizes the call end-to-end.
+
+### Why Subscription Keys for External Clinics, JWT for Internal Users?
+
+External clinics use **APIM subscription keys** (`Ocp-Apim-Subscription-Key`). This is the right fit here because the unit of identity is the clinic itself — one key per clinic, provisioned and revoked by the platform team. It's simple, doesn't require clinics to adopt any identity provider, and APIM manages the lifecycle natively.
+
+Internal users use **JWT tokens** issued by Azure AD. Internal users have individual identities (their org account), so a shared key would be a step backwards — you'd lose the ability to know *who* acted, not just *which system*.
+
+The key distinction: **subscription keys authenticate a system; JWT tokens authenticate a person.**
+
+### When Would JWT Add Value for External Clinics?
+
+There are scenarios where you'd want to move external clinics off subscription keys and onto JWT:
+
+| Scenario | Why JWT wins |
+|---|---|
+| **Multiple users per clinic** | A clinic has admins and read-only staff — JWT claims/roles let APIM or the backend enforce per-user permissions. Subscription keys give everyone at that clinic identical access. |
+| **The clinic already has an Azure AD tenant** | You can configure B2B federation so clinics log in with *their own* org credentials. No separate credentials to provision or rotate. |
+| **Audit and compliance requirements** | JWT carries a user identity (`sub`, `oid` claims). You can log exactly which person uploaded a file, not just which clinic. Subscription keys only tell you the clinic. |
+| **Short-lived credential requirements** | Tokens expire (typically 1 hour) and refresh automatically via MSAL. Subscription keys are long-lived and require manual rotation if compromised. |
+| **Delegated access** | A clinic could grant a third-party billing system scoped access to their results only, using OAuth scopes. Subscription keys are all-or-nothing. |
+
+In this project, clinics are external organizations with no Azure AD relationship, and the unit of trust is the clinic as a whole — so subscription keys are the correct and simpler choice. The `validate-jwt` policy is applied to the internal dashboard product, where individual identity and Azure AD integration are natural fits.
+
+### Architecture
+
+```
+Internal User
+   │
+   ▼
+HealthDoc.Dashboard (React + MSAL)          ← HealthDoc.Dashboard/
+   │ 1. MSAL login (auth code + PKCE)
+   │ 2. Acquire access token (LabResults.Read scope)
+   │ 3. GET /labs/failed-files or /labs/results/{clinicId}
+   │    Authorization: Bearer <token>
+   ▼
+APIM — "Internal Dashboard" product (subscriptionRequired: false)
+   │ validate-jwt policy → Azure AD OIDC config
+   │ x-functions-key injected (existing API-level policy)
+   ▼
+Function App
+   ├── GET /api/blobs/failed   → FailedLabFilesEndpoint.cs  (list + SAS URLs)
+   └── GET /api/results/{clinicId}  → LabResultsEndpoint.cs (existing)
+```
+
+### Step 1 — Azure AD App Registrations (Azure Portal)
+
+**Register the API app (`HealthDoc-API`):**
+1. Azure Active Directory → App registrations → New registration
+2. Name: `HealthDoc-API`, supported account types: single tenant
+3. After creating: Expose an API → Add a scope
+   - Scope name: `LabResults.Read`
+   - Who can consent: Admins and users
+   - Save — note the `api://<api-client-id>` Application ID URI
+
+**Register the SPA app (`HealthDoc-Dashboard`):**
+1. New registration — Name: `HealthDoc-Dashboard`, single tenant
+2. Add platform: Single-page application, redirect URI: `http://localhost:5173`
+3. API permissions → Add permission → My APIs → `HealthDoc-API` → `LabResults.Read` → Grant admin consent
+
+### Step 2 — APIM Named Values
+
+In Azure Portal → APIM → Named values, add:
+
+| Name | Value |
+|---|---|
+| `TenantId` | Your Azure AD tenant ID |
+| `ApiClientId` | Client ID of the `HealthDoc-API` registration |
+
+### Step 3 — APIM Internal Dashboard Product
+
+1. APIM → Products → Add
+   - Name: `Internal Dashboard`
+   - `subscriptionRequired`: **off**
+   - Published: on
+
+2. Add two operations to this product (same API as the existing "External Clinics" product):
+   - **List Failed Files**: `GET /labs/failed-files` → backend `GET /api/blobs/failed`
+   - **Get Lab Results**: `GET /labs/results/{clinicId}` → backend `GET /api/results/{clinicId}` (reuse)
+
+3. Set inbound policy on the product (or per operation):
+
+```xml
+<validate-jwt header-name="Authorization"
+              failed-validation-httpcode="401"
+              failed-validation-error-message="Unauthorized. Valid Azure AD token required.">
+    <openid-config url="https://login.microsoftonline.com/{{TenantId}}/v2.0/.well-known/openid-configuration" />
+    <audiences>
+        <audience>api://{{ApiClientId}}</audience>
+    </audiences>
+</validate-jwt>
+```
+
+The existing API-level inbound policy already injects `x-functions-key`, so no change needed there.
+
+### Step 4 — Frontend Setup
+
+```bash
+cd HealthDoc.Dashboard
+cp .env.example .env
+# Fill in your tenant ID and client IDs in .env
+npm install
+npm run dev
+```
+
+Then navigate to `http://localhost:5173`. Click **Sign In**, complete Azure AD authentication, and the dashboard loads with two tabs:
+
+- **Failed Files** — lists CSVs that failed validation, with a one-hour SAS download link each
+- **Lab Results** — enter a Clinic ID to query processed records
+
+### Verify End-to-End
+
+1. Upload an invalid CSV (missing columns) via the existing APIM upload endpoint — it lands in `lab-results-failed`
+2. Sign in to the dashboard, open **Failed Files** — the file should appear with a working download link
+3. Call `GET https://<apim>.azure-api.net/labs/failed-files` **without** a token → expect `401 Unauthorized`
+4. Call the same endpoint **with** a valid token (copy from browser DevTools Network tab) → expect `200 OK`
+
+---
+
 ## AZ-204 Concepts Checklist
 
 - [ ] **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
@@ -670,3 +791,7 @@ Ocp-Apim-Subscription-Key: <your-subscription-key>
 - [ ] **HTTP trigger (upload)** — `UploadLabResultsEndpoint.cs`; accepts CSV body, generates filename, writes to Blob Storage via `BlobServiceClient`, returns `instanceId`
 - [ ] **API Management** — Consumption SKU; named values, product, subscription, three operations
 - [ ] **APIM policies** — API-level: `set-header` (key injection, clinic-id tagging), outbound header cleanup; operation-level: `rate-limit-by-key`, `choose`/`return-response` size guard, `cache-lookup`/`cache-store`
+- [ ] **MSAL authentication** — `HealthDoc.Dashboard` SPA uses `@azure/msal-react`; authorization code + PKCE flow, silent token renewal, popup fallback
+- [ ] **JWT validation policy** — APIM `validate-jwt` on Internal Dashboard product verifies Azure AD tokens against OIDC discovery endpoint
+- [ ] **SAS token generation** — `FailedLabFilesEndpoint.cs` generates time-limited read-only SAS URIs for blob downloads via `BlobClient.GenerateSasUri`
+- [ ] **Azure AD app registration** — two registrations: API app exposes `LabResults.Read` scope; SPA app consumes it
