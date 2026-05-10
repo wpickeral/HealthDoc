@@ -738,6 +738,26 @@ In Azure Portal → APIM → Named values, add:
 
 > **Important:** This policy must be applied at the product level, not the API level. API-level policies run for every request regardless of which product it came through — placing `validate-jwt` there would require external clinics to present a JWT token in addition to their subscription key, breaking their access. Product-level policies only run for requests that arrive through that specific product, keeping the two access models independent.
 
+#### APIM Policy Execution Order
+
+Policies do not override each other — they **stack**. Every request passes through all three layers in sequence:
+
+```
+Product policy  →  API policy  →  Operation policy  →  Backend
+```
+
+For a clinic uploading a CSV (Clinic Standard product):
+1. **Product** — subscription key validated automatically (`subscriptionRequired: true`)
+2. **API** — `x-functions-key` injected, `x-clinic-id` tagged, response headers cleaned
+3. **Operation** — `rate-limit-by-key` enforced, Content-Type validated
+
+For an internal user fetching results (Internal Dashboard product):
+1. **Product** — `validate-jwt` checks the Azure AD bearer token
+2. **API** — `x-functions-key` injected, response headers cleaned
+3. **Operation** — (none configured)
+
+This is why `validate-jwt` must live at the product level rather than the API level. If it were placed at the API level it would sit in step 2 for both products, forcing external clinics to present a JWT token on top of their subscription key.
+
 ```xml
 <validate-jwt header-name="Authorization"
               failed-validation-httpcode="401"
