@@ -12,11 +12,13 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 
 | Service | Role in This Project | AZ-204 Topic |
 |---|---|---|
-| **Azure API Management** | Front door for the HTTP API surface — subscription key auth, rate limiting, named values, backend routing | APIM policies, products, subscriptions, named values |
-| **Azure Functions** | HTTP upload endpoint, blob trigger, orchestrator, activity functions, Cosmos DB trigger | Isolated worker model, HTTP triggers, blob triggers, output bindings |
+| **Azure API Management** | Front door for the HTTP API surface — two products (external subscription key, internal JWT), rate limiting, named values, backend routing | APIM policies, products, subscriptions, named values, validate-jwt |
+| **Azure Functions** | HTTP upload endpoint, blob trigger, orchestrator, activity functions, Cosmos DB trigger, failed file listing with SAS URLs | Isolated worker model, HTTP triggers, blob triggers, output bindings |
 | **Azure Durable Functions** | Orchestrates the multi-step pipeline with state | Function chaining, fan-out/fan-in, monitor pattern, async HTTP API |
-| **Azure Blob Storage** | Receives uploaded CSVs internally; archives processed/failed files | Blob triggers, storage bindings, server-side copy |
+| **Azure Blob Storage** | Receives uploaded CSVs internally; archives processed/failed files; SAS token generation for secure downloads | Blob triggers, storage bindings, server-side copy, SAS tokens |
 | **Azure Cosmos DB** | Persists processing summaries and lab records; triggers downstream notification | NoSQL output binding, SDK queries, CosmosDB trigger |
+| **Azure Active Directory** | Issues JWT tokens for internal users; two app registrations (API + SPA) with delegated scope `LabResults.Read` | App registrations, OAuth 2.0 scopes, OIDC |
+| **MSAL (React SPA)** | Internal dashboard authenticates users via authorization code + PKCE flow; silent token renewal via refresh token | MSAL auth flows, token acquisition, cache strategy |
 | **Application Insights** | Telemetry collection with sampling; business event tracking | Monitoring and diagnostics |
 
 ---
@@ -81,6 +83,24 @@ Partner Clinic  ──── GET /labs/status/{instanceId} ────► Azure
                                            202 Accepted  → still running, poll again
                                            200 OK        → completed
                                            500           → failed / terminated
+
+Internal User  ──── Sign In (MSAL popup) ────► Azure Active Directory
+(HealthDoc.Dashboard)                               │ access token (LabResults.Read scope)
+                                                    │
+                     GET /labs/failed-files  ◄──────┘
+                     GET /labs/results/{clinicId}
+                     Authorization: Bearer <token>
+                                      │
+                                      ▼
+                             Azure API Management
+                          (Internal Dashboard product —
+                           validate-jwt policy, no subscription key)
+                                      │
+                         ┌───────────┴───────────┐
+                         ▼                       ▼
+               FailedLabFilesEndpoint    LabResultsEndpoint
+               (lists lab-results-failed  (CosmosClient —
+                container + SAS URLs)      queries by clinicId)
 ```
 
 ---
@@ -191,6 +211,18 @@ HealthDoc/
 ├── HealthDoc.Tests/                        # xUnit tests (net10.0)
 │   ├── LabRecordTests.cs
 │   └── ProcessedRecordTests.cs
+│
+├── HealthDoc.Dashboard/                    # Internal React/TypeScript SPA (Vite + MSAL)
+│   ├── src/
+│   │   ├── main.tsx                        # Entry point — MsalProvider wrapper
+│   │   ├── App.tsx                         # Auth gate: login page or Dashboard
+│   │   ├── authConfig.ts                   # MSAL config, API scope, APIM base URL
+│   │   ├── hooks/useApiToken.ts            # Silent token acquisition with popup fallback
+│   │   └── components/
+│   │       ├── Dashboard.tsx               # Tab shell — shows logged-in user
+│   │       ├── FailedFilesPanel.tsx        # Lists failed CSVs with SAS download links
+│   │       └── ResultsPanel.tsx            # Clinic ID search → processed records table
+│   └── .env.example                        # Required env vars (tenant ID, client IDs, APIM URL)
 │
 └── lab_results_2024_05_01.csv             # Sample input file
 ```
