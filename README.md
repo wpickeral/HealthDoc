@@ -363,7 +363,18 @@ Create `HealthDoc/local.settings.json` (not committed):
 }
 ```
 
-The `CosmosDBConnectionString` and `StorageConnectionString` keys are used by binding attributes (`[CosmosDBOutput]`, `[BlobTrigger]`, etc.) which the Functions runtime resolves. The `Endpoint` variants are used by the SDK clients (`CosmosClient`, `BlobServiceClient`) which authenticate via `DefaultAzureCredential` — run `az login` before starting the host.
+There are two separate consumers of these settings, and they authenticate differently:
+
+| Setting | Consumer | How it authenticates |
+|---|---|---|
+| `CosmosDBEndpoint`, `StorageAccountEndpoint` | SDK clients (`CosmosClient`, `BlobServiceClient`) | `DefaultAzureCredential` — `az login` locally, Managed Identity in Azure. No secret needed. |
+| `CosmosDBConnectionString`, `StorageConnectionString` | Binding attributes (`[CosmosDBOutput]`, `[BlobTrigger]`, etc.) | Connection string resolved by the Functions runtime. Still needed locally. |
+
+**Why Key Vault doesn't eliminate local connection strings:** `@Microsoft.KeyVault(...)` references are resolved by the Azure Functions host reading live App Settings from the Azure portal. `local.settings.json` is a flat file read directly by the local host — there is no Key Vault resolution. So locally, the actual connection string values are always required for binding attributes.
+
+In Azure, the connection string app settings are replaced with Key Vault references and the runtime resolves them transparently. The SDK clients don't use connection strings in either environment — they use `DefaultAzureCredential` throughout.
+
+> Run `az login` before starting the host so `DefaultAzureCredential` can resolve the developer credential for the SDK clients.
 
 ### Azure Resource Setup
 
