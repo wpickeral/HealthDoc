@@ -768,11 +768,24 @@ In this project: locally → #5 (`az login`). In Azure → #3 (Managed Identity)
 
 **Grant RBAC roles:**
 
-| Resource | Role | Assignee |
-|---|---|---|
-| Key Vault | `Key Vault Secrets User` | Function App identity |
-| Cosmos DB account | `Cosmos DB Built-in Data Contributor` | Function App identity |
-| Storage account | `Storage Blob Data Contributor` | Function App identity |
+| Resource | Role | Assignee | How to assign |
+|---|---|---|---|
+| Key Vault | `Key Vault Secrets User` | Function App identity | Portal IAM blade |
+| Storage account | `Storage Blob Data Contributor` | Function App identity | Portal IAM blade |
+| Cosmos DB account | `Cosmos DB Built-in Data Contributor` | Function App identity | Azure CLI only (see below) |
+
+The Cosmos DB role is a **data plane** role, not a control plane role. It does not appear in the portal IAM blade and must be assigned via CLI:
+
+```bash
+az cosmosdb sql role assignment create \
+  --account-name <cosmos-account-name> \
+  --resource-group <rg> \
+  --role-definition-name "Cosmos DB Built-in Data Contributor" \
+  --principal-id <object-id-of-function-app-identity> \
+  --scope "/"
+```
+
+The `--principal-id` is the Object (principal) ID shown in the Function App → **Identity** → **System assigned** blade. The `--scope "/"` grants access to all databases in the account.
 
 > **RBAC vs Access Policies:** Key Vault supports both models. Access policies are vault-level and older; Azure RBAC is consistent with all other Azure resources and the recommended approach. Know both for the exam.
 
