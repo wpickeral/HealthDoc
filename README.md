@@ -23,7 +23,8 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 9. [Azure Service Bus](#azure-service-bus)
 10. [Azure Event Grid](#azure-event-grid)
 11. [Azure Cache for Redis](#azure-cache-for-redis)
-12. [AZ-204 Concepts Checklist](#az-204-concepts-checklist)
+12. [Container Deployment](#container-deployment)
+13. [AZ-204 Concepts Checklist](#az-204-concepts-checklist)
 
 ---
 
@@ -44,6 +45,8 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 | **Azure Cache for Redis** | Cache-aside on lab results queries; write-invalidation on new record writes | Cache-aside pattern, TTL, eviction, IConnectionMultiplexer |
 | **Application Insights** | Telemetry collection with sampling; custom business events and pipeline metrics | Monitoring, custom events, structured logging |
 | **MSAL (React SPA)** | Internal dashboard authenticates via authorization code + PKCE; silent token renewal | MSAL auth flows, token acquisition, cache strategy |
+| **Azure Container Registry** | Stores the dashboard Docker image; pulled by ACI at deployment | Registry tiers, image push/pull, admin credentials |
+| **Azure Container Instances** | Hosts the React dashboard as a container with runtime-injected config | Container groups, restart policies, secure env vars, scale to zero |
 
 ---
 
@@ -1051,6 +1054,157 @@ docker run -d -p 6379:6379 redis
 
 ---
 
+## Container Deployment
+
+### Why ACI for a Static SPA?
+
+Azure Static Web Apps would be the natural fit for a Vite React SPA — purpose-built for static sites, free tier, global CDN, zero configuration. Azure Container Instances is overkill here from a purely architectural standpoint.
+
+This project uses ACI deliberately: containers, container registries, restart policies, and scale-to-zero are AZ-204 exam topics. Static Web Apps is not. The tradeoff is documented here so readers understand the decision was intentional and can apply the right tool in their own projects.
+
+### Runtime Config Pattern
+
+Vite bakes `import.meta.env.VITE_*` values into the JavaScript bundle at build time — they become literal strings in the compiled output. Passing environment variables to a container at runtime has no effect on an already-built bundle.
+
+To use ACI's `secureEnvironmentVariables`, the app uses a runtime config pattern instead:
+
+```
+Container startup
+  └─ entrypoint.sh reads ACI env vars
+       └─ writes /usr/share/nginx/html/config.js
+            └─ window.__config__ = { TENANT_ID, SPA_CLIENT_ID, ... }
+
+Browser loads index.html
+  └─ <script src="/config.js"> runs first   ← sets window.__config__
+       └─ React bundle loads
+            └─ authConfig.ts reads window.__config__
+```
+
+The Docker image contains no configuration — the same image runs in any environment by changing the YAML, not rebuilding. For local development, `public/config.js` (gitignored) provides `window.__config__` to the Vite dev server so `npm run dev` continues to work.
+
+### Multi-Stage Dockerfile
+
+The Dockerfile uses two stages to keep the final image small:
+
+```
+Stage 1 (node:20-alpine)    Stage 2 (nginx:alpine)
+  npm ci                      COPY dist/ → /usr/share/nginx/html
+  npm run build               COPY nginx.conf
+  → dist/                     COPY entrypoint.sh
+                              EXPOSE 80
+```
+
+The final image contains only Nginx and the compiled static files — no Node runtime, no `node_modules`. Typical final image size: ~25 MB.
+
+### Build and Test Locally
+
+```bash
+cd HealthDoc.Dashboard
+docker build -t healthdoc-dashboard:latest .
+
+docker run -p 8080:80 \
+  -e TENANT_ID=<value> \
+  -e SPA_CLIENT_ID=<value> \
+  -e API_CLIENT_ID=<value> \
+  -e APIM_BASE_URL=<value> \
+  healthdoc-dashboard:latest
+```
+
+Browse `http://localhost:8080`. The `-e` flags mirror what ACI's `secureEnvironmentVariables` inject in production.
+
+### Azure Container Registry
+
+ACR stores the image before ACI pulls it.
+
+```bash
+az acr create \
+  --name acrHealthDocDev \
+  --resource-group <rg> \
+  --sku Basic \
+  --admin-enabled true
+
+az acr login --name acrHealthDocDev
+docker tag healthdoc-dashboard:latest acrHealthDocDev.azurecr.io/healthdoc-dashboard:latest
+docker push acrHealthDocDev.azurecr.io/healthdoc-dashboard:latest
+```
+
+`--admin-enabled true` allows ACI to authenticate with a username and password. For production, assign the ACI managed identity the `AcrPull` RBAC role on the registry instead.
+
+**ACR SKU comparison:**
+
+| Tier | Storage | Webhooks | Geo-replication | Best for |
+|---|---|---|---|---|
+| Basic | 10 GB | No | No | Dev/test |
+| Standard | 100 GB | Yes | No | Most production |
+| Premium | 500 GB | Yes | Yes | Global, high-throughput |
+
+### Deploy to Azure Container Instances
+
+Copy `container.yaml.example` to `container.yaml` (gitignored), fill in your values, and deploy:
+
+```bash
+ACR_PASSWORD=$(az acr credential show --name acrHealthDocDev --query passwords[0].value -o tsv)
+az container create --resource-group <rg> --file container.yaml
+```
+
+The `container.yaml` template uses `secureEnvironmentVariables` for all four config values. Secure values are never returned by the API after creation — they do not appear in `az container show` output or portal logs.
+
+**`secureEnvironmentVariables` vs `environmentVariables`:**
+
+| | `environmentVariables` | `secureEnvironmentVariables` |
+|---|---|---|
+| Visible in portal | Yes | No |
+| Returned by `az container show` | Yes | No |
+| Visible in container logs | Depends on app | Depends on app |
+| Use for | Non-sensitive config | Secrets, credentials, tokens |
+
+### Restart Policies
+
+```yaml
+restartPolicy: Always
+```
+
+| Policy | Behaviour | Use case |
+|---|---|---|
+| `Always` | Restart on any exit, including clean exit (code 0) | Long-running services — web servers, APIs |
+| `OnFailure` | Restart only on non-zero exit code | Batch jobs that should stop cleanly on success |
+| `Never` | Never restart | One-shot tasks — run once and stop |
+
+This project uses `Always` — correct for a persistent web server. `OnFailure` and `Never` are the patterns to know for batch/task workloads on the exam.
+
+### Scale to Zero
+
+ACI bills per second of CPU and memory consumption. There is no charge when a container group is stopped — this is the ACI scale-to-zero model.
+
+```bash
+# Stop the container — billing stops immediately
+az container stop --resource-group <rg> --name aci-healthdoc-dashboard
+
+# Restart — same config, same env vars, no redeployment needed
+az container start --resource-group <rg> --name aci-healthdoc-dashboard
+```
+
+Stop the container after each study session to avoid ongoing charges. For automated cost control, a Logic App or scheduled runbook can call the stop API on a schedule.
+
+### Update Azure AD Redirect URI
+
+`authConfig.ts` uses `window.location.origin` as the MSAL `redirectUri`, so Azure AD must allow the ACI hostname. Add it to the `HealthDoc-Dashboard` app registration:
+
+Azure Active Directory → App registrations → `HealthDoc-Dashboard` → Authentication → Single-page application → Add URI:
+```
+http://healthdoc-dashboard.<region>.azurecontainer.io
+```
+
+### View Container Logs
+
+```bash
+az container logs --resource-group <rg> --name aci-healthdoc-dashboard
+```
+
+Nginx logs every request — useful for confirming the container is serving traffic and that `config.js` is being loaded.
+
+---
+
 ## AZ-204 Concepts Checklist
 
 ### Compute — Azure Functions
@@ -1139,3 +1293,15 @@ docker run -d -p 6379:6379 redis
 - [ ] **Subscription filters** — subject-begins-with limits auditor to `lab-results-incoming` only; advanced filters for field-level matching
 - [ ] **Event Grid retry and dead-lettering** — exponential backoff up to 30 attempts / 24 hours; undelivered events to blob storage
 - [ ] **Event Grid vs Service Bus vs BlobTrigger** — push fan-out vs durable queuing vs polling
+
+### Containers
+
+- [ ] **Multi-stage Dockerfile** — Node build stage produces `dist/`; Nginx serve stage copies it in; final image has no Node runtime
+- [ ] **Runtime config injection** — `entrypoint.sh` writes `window.__config__` from env vars before Nginx starts; image carries no environment-specific values
+- [ ] **Azure Container Registry** — `az acr create`, `docker push`, admin credentials vs `AcrPull` RBAC role
+- [ ] **ACR SKU tiers** — Basic (dev), Standard (production), Premium (geo-replication)
+- [ ] **ACI deployment via YAML** — `az container create --file container.yaml`; container group structure
+- [ ] **secureEnvironmentVariables** — values hidden from portal, API responses, and `az container show`; contrast with plain `environmentVariables`
+- [ ] **Restart policies** — `Always` (web servers), `OnFailure` (batch jobs), `Never` (one-shot tasks)
+- [ ] **Scale to zero** — per-second billing; `az container stop` ends charges; `az container start` resumes with same config
+- [ ] **ACI vs App Service vs Static Web Apps** — ACI for containerised workloads; App Service for managed PaaS; Static Web Apps for SPAs/static sites (right tool here, not used — exam coverage was the priority)
