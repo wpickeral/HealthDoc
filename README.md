@@ -774,7 +774,9 @@ In this project: locally → #5 (`az login`). In Azure → #3 (Managed Identity)
 | Storage account | `Storage Blob Data Contributor` | Function App identity | Portal IAM blade |
 | Cosmos DB account | `Cosmos DB Built-in Data Contributor` | Function App identity | Azure CLI only (see below) |
 
-The Cosmos DB role is a **data plane** role, not a control plane role. It does not appear in the portal IAM blade and must be assigned via CLI:
+The Cosmos DB role is a **data plane** role, not a control plane role. It does not appear in the portal IAM blade and must be assigned via CLI.
+
+The control plane roles available in the IAM blade (such as `Contributor` or `Cosmos DB Account Reader`) govern account management: creating databases, adjusting throughput, viewing connection strings. They grant no access to read or write documents. When `CosmosClient` authenticates with `DefaultAzureCredential` and calls `GetItemQueryIterator` or `ReadItemAsync`, the Cosmos DB service checks data plane RBAC for those requests — not control plane RBAC. An identity with `Contributor` on the account but no data plane role will still receive a 403 on every SDK call. `Cosmos DB Built-in Data Contributor` is the role that grants permission to read and write documents.
 
 ```bash
 az cosmosdb sql role assignment create \
