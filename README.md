@@ -363,7 +363,7 @@ Create `HealthDoc/local.settings.json` (not committed):
     "StorageConnectionString": "<storage-connection-string>",
     "StorageAccountEndpoint": "https://<account>.blob.core.windows.net/",
 
-    "KeyVaultEndpoint": "https://kv-healthdoc-dev.vault.azure.net/",
+    "KeyVaultEndpoint": "https://kv-health-doc-dev.vault.azure.net/",
 
     "ServiceBusConnectionString": "<service-bus-connection-string>",
 
@@ -751,7 +751,7 @@ In this project: locally → #5 (`az login`). In Azure → #3 (Managed Identity)
 
 #### Portal Setup
 
-**Create Key Vault** (`kv-healthdoc-dev`, Standard tier, soft-delete and purge protection enabled).
+**Create Key Vault** (`kv-health-doc-dev`, Standard tier, soft-delete and purge protection enabled).
 
 **Grant yourself the `Key Vault Secrets Officer` role** on the vault before adding secrets. This is required when RBAC is enabled on the vault — without it, the portal will return a 403 when you try to create or view secrets. Key Vault Secrets Officer allows read, write, list, and delete on secrets. Key Vault Administrator is broader (covers keys and certificates too) and more than needed for this task.
 
@@ -798,7 +798,7 @@ The `--principal-id` is the Object (principal) ID shown in the Function App → 
 **Replace App Settings with Key Vault references:** Function App → **Configuration** → replace each connection string value with:
 
 ```
-@Microsoft.KeyVault(VaultName=kv-healthdoc-dev;SecretName=CosmosDBConnectionString)
+@Microsoft.KeyVault(VaultName=kv-health-doc-dev;SecretName=CosmosDBConnectionString)
 ```
 
 Also add the endpoint settings:
