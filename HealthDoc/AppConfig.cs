@@ -57,6 +57,8 @@ public static class AppConfig
     {
         public const string TopicEndpoint = "EventGridTopicEndpoint";
         public const string TopicKey      = "EventGridTopicKey";
+        public const string Source        = "/healthdoc/labs/orchestrator";
+        public const string AbnormalResultDetectedType = "HealthDoc.Lab.AbnormalResultDetected";
     }
 
     public static class ServiceBus

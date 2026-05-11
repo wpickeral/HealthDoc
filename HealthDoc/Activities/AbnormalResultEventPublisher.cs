@@ -34,8 +34,8 @@ public class AbnormalResultEventPublisher
     public async Task PublishAsync([ActivityTrigger] ProcessingSummary summary)
     {
         var cloudEvent = new CloudEvent(
-            source: "/healthdoc/labs/orchestrator",
-            type:   "HealthDoc.Lab.AbnormalResultDetected",
+            source: AppConfig.EventGrid.Source,
+            type:   AppConfig.EventGrid.AbnormalResultDetectedType,
             jsonSerializableData: new AbnormalResultEvent
             {
                 BatchId       = summary.BatchId,
