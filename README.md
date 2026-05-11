@@ -941,16 +941,16 @@ If a subscriber returns non-2xx or times out, Event Grid retries with exponentia
 
 ### Portal Setup
 
-**Create custom Event Grid topic** (`evgt-healthdoc-abnormal-alerts`, Cloud Event Schema v1.0). Copy Key 1 as `EventGridTopicKey` and the endpoint URL as `EventGridTopicEndpoint`.
+**Create custom Event Grid topic** — Portal → **Create a resource** → search **Event Grid Topic**:
 
-The portal presents several topic types and schema options — here is why each choice is made:
-
-| Option | Choice | Why |
+| Field | Value | Why |
 |---|---|---|
-| **Topic type** | Custom topic | System topics are created automatically by Azure services (e.g. Storage, Cosmos DB). A custom topic is for events your own application publishes — this is what `AbnormalResultEventPublisher` publishes to. |
-| **Event schema** | Cloud Event Schema v1.0 | The open CNCF standard. Portable across non-Azure systems. `[EventGridTrigger]` accepts both CloudEvents and Event Grid schema. CloudEvents is the recommended choice for new work — Event Grid schema is Azure-specific and exists mainly for backwards compatibility. |
-| **Access tier** | Leave default | Controls ingestion throughput. Default (Basic) is sufficient for a study project. |
-| **System-assigned identity** | Optional | Enables Managed Identity publishing instead of key-based auth. The project uses `AzureKeyCredential` for simplicity locally. See the note below for the production upgrade path. |
+| **Name** | `evgt-healthdoc-abnormal-alerts` | Identifies the custom topic |
+| **Topic type** | Custom topic | System topics are created automatically by Azure services (Storage, Cosmos DB, etc.). A custom topic is for events your own application publishes — this is what `AbnormalResultEventPublisher` writes to. |
+| **Event schema** | Cloud Event Schema v1.0 | Open CNCF standard, portable across non-Azure systems. `[EventGridTrigger]` accepts both CloudEvents and Event Grid schema — CloudEvents is the recommended choice for new work. |
+| **Access tier** | Leave default (Basic) | Controls ingestion throughput; Basic is sufficient for a study project. |
+
+Once created, go to the topic → **Access keys** → copy **Key 1** as `EventGridTopicKey` in `local.settings.json`. Copy the **Topic Endpoint** URL as `EventGridTopicEndpoint`.
 
 **Create system event subscription** — Storage account → **Events** → **+ Event Subscription**:
 
