@@ -725,7 +725,13 @@ new CosmosClient(endpoint, credential);
 new BlobServiceClient(new Uri(endpoint), credential);
 ```
 
-Binding attributes (`[CosmosDBOutput]`, `[BlobTrigger]`, etc.) still reference named connection string settings because the Functions runtime resolves these — not the SDK. In Azure, those app settings are Key Vault references that the runtime resolves transparently before passing to the binding provider.
+Binding attributes (`[CosmosDBOutput]`, `[BlobTrigger]`, etc.) still reference named connection string settings because the Functions runtime resolves these — not the SDK. In Azure, those app settings use **Key Vault references** instead of storing the secret value directly.
+
+A Key Vault reference is a special app setting value in the format:
+```
+@Microsoft.KeyVault(SecretUri=https://<vault>.vault.azure.net/secrets/<secret-name>/)
+```
+The Functions runtime detects this format, fetches the real value from Key Vault at startup using the Function App's Managed Identity, and passes it to the binding provider — the binding code never sees the reference string, only the resolved secret. The secret lives in one place (Key Vault) and is never stored in app settings or config files.
 
 #### DefaultAzureCredential Chain
 
