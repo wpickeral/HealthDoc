@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { APIM_BASE } from "../authConfig";
+import { APIM_BASE } from "../authConfig.ts";
 import { useApiToken } from "../hooks/useApiToken";
 
 interface FailedFile {

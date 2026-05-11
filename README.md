@@ -1,12 +1,29 @@
 # HealthDoc
 
-A regional healthcare network receives lab result CSV files from partner clinics daily. Previously, a staff member manually downloaded each file, validated it, entered results into the system, and emailed a confirmation back to the clinic — a process that was slow, error-prone, and impossible to scale. 
+A regional healthcare network receives lab result CSV files from partner clinics daily. Previously, a staff member manually downloaded each file, validated it, entered results into the system, and emailed a confirmation back to the clinic — a process that was slow, error-prone, and impossible to scale.
 
-HealthDoc replaces that workflow with a fully automated ingestion pipeline: partner clinics POST CSV files to an HTTP endpoint through Azure API Management, which triggers an Azure Durable Functions orchestration that validates, parses, processes, stores, and confirms each batch without human intervention.
+HealthDoc replaces that workflow with a fully automated ingestion pipeline. Partner clinics POST CSV files through Azure API Management, which triggers an Azure Durable Functions orchestration that validates, parses, processes, stores, and confirms each batch without human intervention. Processed results are cached in Redis, abnormal findings are broadcast via Service Bus and Event Grid, and every upload is recorded in an audit log. An internal React dashboard lets staff review failed files and query results, authenticated through Azure AD.
 
-Built as an AZ-204 exam study project. Every section of this README maps to an exam topic.
+Built as an AZ-204 exam study project — every service and pattern maps directly to an exam domain.
 
 Co-authored with [Claude](https://claude.ai) (Anthropic).
+
+---
+
+## Table of Contents
+
+1. [Azure Services](#azure-services)
+2. [Architecture](#architecture)
+3. [Project Structure](#project-structure)
+4. [The Pipeline](#the-pipeline)
+5. [Durable Functions Patterns](#durable-functions-patterns)
+6. [Local Development](#local-development)
+7. [Azure API Management](#azure-api-management)
+8. [Authentication & Security](#authentication--security)
+9. [Azure Service Bus](#azure-service-bus)
+10. [Azure Event Grid](#azure-event-grid)
+11. [Azure Cache for Redis](#azure-cache-for-redis)
+12. [AZ-204 Concepts Checklist](#az-204-concepts-checklist)
 
 ---
 
@@ -14,18 +31,27 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 
 | Service | Role in This Project | AZ-204 Topic |
 |---|---|---|
-| **Azure API Management** | Front door for the HTTP API surface — two products (external subscription key, internal JWT), rate limiting, named values, backend routing | APIM policies, products, subscriptions, named values, validate-jwt |
-| **Azure Functions** | HTTP upload endpoint, blob trigger, orchestrator, activity functions, Cosmos DB trigger, failed file listing with SAS URLs | Isolated worker model, HTTP triggers, blob triggers, output bindings |
-| **Azure Durable Functions** | Orchestrates the multi-step pipeline with state | Function chaining, fan-out/fan-in, monitor pattern, async HTTP API |
-| **Azure Blob Storage** | Receives uploaded CSVs internally; archives processed/failed files; SAS token generation for secure downloads | Blob triggers, storage bindings, server-side copy, SAS tokens |
-| **Azure Cosmos DB** | Persists processing summaries and lab records; triggers downstream notification | NoSQL output binding, SDK queries, CosmosDB trigger |
-| **Azure Active Directory** | Issues JWT tokens for internal users; two app registrations (API + SPA) with delegated scope `LabResults.Read` | App registrations, OAuth 2.0 scopes, OIDC |
-| **MSAL (React SPA)** | Internal dashboard authenticates users via authorization code + PKCE flow; silent token renewal via refresh token | MSAL auth flows, token acquisition, cache strategy |
-| **Application Insights** | Telemetry collection with sampling; business event tracking | Monitoring and diagnostics |
+| **Azure Functions** | HTTP upload endpoint, blob trigger, orchestrator, activity functions, Cosmos DB trigger, Event Grid trigger, Service Bus trigger, failed file listing | Isolated worker model, triggers, output bindings |
+| **Azure Durable Functions** | Orchestrates the multi-step pipeline with durable state | Function chaining, fan-out/fan-in, monitor, async HTTP API |
+| **Azure Blob Storage** | Receives uploaded CSVs; archives processed/failed files; SAS token generation | Blob triggers, storage bindings, server-side copy, SAS tokens |
+| **Azure Cosmos DB** | Persists lab records, processing summaries, and audit logs | NoSQL output binding, SDK queries, CosmosDB trigger |
+| **Azure API Management** | Gateway for all HTTP endpoints — two products (subscription key, JWT), rate limiting, named values, response caching | APIM policies, products, subscriptions, named values, validate-jwt |
+| **Azure Active Directory** | Issues JWT tokens for internal users; two app registrations with delegated scope `LabResults.Read` | App registrations, OAuth 2.0 scopes, OIDC |
+| **Azure Key Vault** | Stores connection strings as secrets; app settings reference them at runtime | Key Vault secrets, Key Vault references, soft-delete |
+| **Managed Identity** | Function App authenticates to Cosmos, Storage, and Key Vault without connection strings | System-assigned identity, DefaultAzureCredential, RBAC |
+| **Azure Service Bus** | Delivers batch-complete notifications (queue) and abnormal-result alerts (topic with subscriptions) | Queues, topics, subscriptions, DLQ, peek-lock |
+| **Azure Event Grid** | Push-based fan-out — blob created audit events (system) and abnormal result detected events (custom) | System events, custom events, CloudEvents, subscription filters |
+| **Azure Cache for Redis** | Cache-aside on lab results queries; write-invalidation on new record writes | Cache-aside pattern, TTL, eviction, IConnectionMultiplexer |
+| **Application Insights** | Telemetry collection with sampling; custom business events and pipeline metrics | Monitoring, custom events, structured logging |
+| **MSAL (React SPA)** | Internal dashboard authenticates via authorization code + PKCE; silent token renewal | MSAL auth flows, token acquisition, cache strategy |
 
 ---
 
 ## Architecture
+
+### Ingestion Pipeline
+
+When a partner clinic uploads a CSV, the file flows through APIM into an automated processing pipeline. Two independent triggers fire on the same blob write — the BlobTrigger starts the Durable orchestration; the EventGrid trigger writes an audit record. The orchestrator runs validation, parsing, parallel record processing, persistence, and downstream notification as a durable, replay-safe workflow.
 
 ```
 Partner Clinic  ──── POST /labs/upload ────► Azure API Management
@@ -37,83 +63,205 @@ Partner Clinic  ──── POST /labs/upload ────► Azure API Managem
                                              (generates unique filename,
                                               writes blob to lab-results-incoming)
                                                         │
-                                                        │ blob write
-                                                        ▼
-Azure Blob Storage ──── BlobTrigger ────► LabResultIngestionTrigger
-(lab-results-incoming)                            │
-                                                  │ ScheduleNewOrchestrationInstanceAsync
-                                                  ▼
-                                         LabResultOrchestrator
-                                                  │
-                          ┌───────────────────────┤  Function Chaining
-                          ▼                       ▼
-                     ValidateFile            ParseFile
-                    (invalid?)               (List<LabRecord>)
-                          │                       │
-                          │ MoveFile              │  Fan-out
-                          ▼          ┌────────────┼────────────┐
-               lab-results-failed    ▼            ▼            ▼
-                                ProcessRecord   ...      ProcessRecord
-                                          │                    │
-                                          └──────────┬─────────┘
-                                                     │  Fan-in (Task.WhenAll)
-                                                     │
-                                          ┌──────────┴──────────┐
-                                          ▼                     ▼
-                                     StoreRecords          StoreSummary
-                                    (LabResultRecords)           │  Cosmos DB Output Binding
-                                                                 ▼
-                                                          Cosmos DB ◄──── CheckStorageConfirmation
-                                                       (LabResults /          (Monitor Pattern —
-                                                    ProcessingSummaries)    polls up to 10× / 30s)
-                                                     │                    │
-                                                     │ MoveFile      (timeout) WriteTimeoutSummary
-                                                     ▼
-                                          lab-results-processed
+                                               ┌────────┴────────┐
+                                               │ blob write       │ blob write
+                                               ▼                  ▼
+                              LabResultIngestionTrigger     EventGridLabResultAuditor
+                              (BlobTrigger)                 (EventGridTrigger — BlobCreated)
+                                    │                       writes AuditLog → Cosmos DB
+                                    │ StartOrchestration
+                                    ▼
+                           LabResultOrchestrator
+                                    │
+                 ┌──────────────────┤  Function Chaining
+                 ▼                  ▼
+            ValidateFile        ParseFile
+           (invalid?)           (List<LabRecord>)
+                 │                  │
+                 │ MoveFile         │  Fan-out
+                 ▼      ┌───────────┼───────────┐
+        lab-results-    ▼           ▼           ▼
+           failed   ProcessRecord  ...     ProcessRecord
+                             │                  │
+                             └────────┬─────────┘
+                                      │  Fan-in (Task.WhenAll)
+                                      │
+                           ┌──────────┴──────────┐
+                           ▼                     ▼
+                      StoreRecords           StoreSummary
+                    (LabResultRecords)    (ProcessingSummaries)
+                    + Redis invalidate     + CosmosDB Output
+                                               │
+                              ┌────────────────┤ (if AbnormalCount > 0)
+                              ▼                ▼
+                   CheckStorageConfirmation  PublishAbnormalEvent
+                   (Monitor — polls up to    (Event Grid custom topic)
+                    10× / 30s durable timer)
+                              │
+                   PublishBatchComplete ──► Service Bus queue ──► ServiceBusLabResultNotifier
+                   PublishAbnormalAlert ──► Service Bus topic ──► clinical-alerts subscription
+                                                                ► critical-alerts (AbnormalCount > 5)
+                              │
+                              ▼
+                   MoveFile → lab-results-processed
+                              │
+                   CosmosDBTrigger ──► DownstreamSystemNotifier (App Insights telemetry)
+```
 
-                                               Cosmos DB ──── CosmosDBTrigger ────► NotifyDownstreamSystems
-                                            (ProcessingSummaries)                   (App Insights telemetry)
+### Query & Dashboard
 
+After a batch is processed, partner clinics poll for status and results using the instance ID returned at upload time. Internal staff access the dashboard through a React SPA that authenticates with Azure AD — the APIM Internal Dashboard product validates the JWT before any request reaches the Function App.
+
+```
 Partner Clinic  ──── GET /labs/status/{instanceId} ────► Azure API Management
                      GET /labs/results/{clinicId}                  │
                      Ocp-Apim-Subscription-Key         ┌───────────┴───────────┐
                                                        ▼                       ▼
                                                 GetBatchStatus        LabResultsEndpoint
-                                           (DurableClient —        (CosmosClient —
-                                            queries instance)       queries by clinicId)
+                                           (DurableClient)           (Redis → Cosmos)
                                                        │
-                                           202 Accepted  → still running, poll again
+                                           202 Accepted  → still running
                                            200 OK        → completed
                                            500           → failed / terminated
 
-Internal User  ──── Sign In (MSAL popup) ────► Azure Active Directory
-(HealthDoc.Dashboard)                               │ access token (LabResults.Read scope)
-                                                    │
-                     GET /labs/failed-files  ◄──────┘
-                     GET /labs/results/{clinicId}
-                     Authorization: Bearer <token>
-                                      │
-                                      ▼
-                             Azure API Management
-                          (Internal Dashboard product —
-                           validate-jwt policy, no subscription key)
-                                      │
-                         ┌───────────┴───────────┐
-                         ▼                       ▼
-               FailedLabFilesEndpoint    LabResultsEndpoint
-               (lists lab-results-failed  (CosmosClient —
-                container + SAS URLs)      queries by clinicId)
+
+Internal User  ──── Sign In (MSAL) ────► Azure Active Directory
+(HealthDoc.Dashboard)                        │ access token (LabResults.Read scope)
+                                             │
+               GET /labs/failed-files  ◄─────┘
+               GET /labs/results/{clinicId}
+               Authorization: Bearer <token>
+                                    │
+                                    ▼
+                           Azure API Management
+                        (Internal Dashboard product —
+                         validate-jwt, no subscription key)
+                                    │
+                       ┌───────────┴───────────┐
+                       ▼                       ▼
+             FailedLabFilesEndpoint    LabResultsEndpoint
+             (blob list + SAS URLs)    (Redis → Cosmos)
 ```
+
+---
+
+## Project Structure
+
+```
+HealthDoc/
+├── HealthDoc.sln
+│
+├── HealthDoc/                                  # Azure Functions isolated worker app
+│   ├── Program.cs                              # DI — all SDK clients registered as singletons
+│   ├── AppConfig.cs                            # Centralized const strings for all services
+│   ├── host.json                               # Application Insights sampling config
+│   ├── Functions/
+│   │   ├── UploadLabResultsEndpoint.cs         # HTTP POST /api/upload → blob write → instanceId
+│   │   ├── LabResultIngestionTrigger.cs        # BlobTrigger → schedules orchestration
+│   │   ├── LabResultOrchestrator.cs            # Orchestrator — all four Durable patterns
+│   │   ├── BatchStatusEndpoint.cs              # HTTP GET /api/status/{instanceId} — async HTTP API
+│   │   ├── LabResultsEndpoint.cs               # HTTP GET /api/results/{clinicId} — Redis → Cosmos
+│   │   ├── FailedLabFilesEndpoint.cs           # HTTP GET /api/blobs/failed → blob list + SAS URLs
+│   │   ├── DownstreamSystemNotifier.cs         # CosmosDBTrigger → App Insights telemetry
+│   │   ├── EventGridLabResultAuditor.cs        # EventGridTrigger (BlobCreated) → AuditLog
+│   │   ├── ServiceBusLabResultNotifier.cs      # ServiceBusTrigger → App Insights event
+│   │   └── ServiceBusDeadLetterMonitor.cs      # TimerTrigger → peeks DLQ every 5 minutes
+│   └── Activities/
+│       ├── FileValidator.cs                    # ValidateFile — checks headers and data rows
+│       ├── FileParser.cs                       # ParseFile — CSV → List<LabRecord>
+│       ├── LabRecordProcessor.cs               # ProcessRecord — enriches one record
+│       ├── SummaryUpdater.cs                   # StoreSummary — Cosmos DB output binding
+│       ├── StorageConfirmationValidator.cs     # CheckStorageConfirmation — Cosmos SDK query
+│       ├── TimeoutSummaryWriter.cs             # WriteTimeoutSummary — persists timed-out status
+│       ├── MoveProcessedFile.cs                # MoveFile — server-side blob copy + delete
+│       ├── PatientResultUpdater.cs             # StoreRecords — Cosmos write + Redis invalidation
+│       ├── BatchCompletePublisher.cs           # PublishBatchComplete — ServiceBus queue output
+│       ├── AbnormalAlertPublisher.cs           # PublishAbnormalAlert — ServiceBus topic output
+│       └── AbnormalResultEventPublisher.cs     # PublishAbnormalEvent — Event Grid custom event
+│
+├── HealthDoc.Models/                           # Shared models — no Azure dependency
+│   ├── LabRecord.cs                            # CSV row + static From(string[]) factory
+│   ├── ProcessedRecord.cs                      # Enriched record + static From(LabRecord) factory
+│   ├── ProcessingSummary.cs                    # Batch-level summary written to Cosmos
+│   ├── ConfirmationStatus.cs                   # Unknown → Confirmed | TimedOut enum
+│   ├── ValidationResult.cs                     # IsValid + Errors list
+│   ├── FilePayload.cs                          # FileName + Content passed to orchestrator
+│   ├── FileArchiveRequest.cs                   # FileName + TargetContainer + Reason for MoveFile
+│   ├── FailedFileInfo.cs                       # Blob name + SAS URL + created timestamp
+│   ├── BatchCompletedMessage.cs                # Service Bus message payload
+│   ├── AbnormalResultEvent.cs                  # Event Grid custom event data
+│   └── LabAuditRecord.cs                       # Audit log document written to Cosmos
+│
+├── HealthDoc.Tests/                            # xUnit tests (net10.0)
+│   ├── LabRecordTests.cs                       # From factory — column mapping, whitespace
+│   └── ProcessedRecordTests.cs                 # IsAbnormal boundary cases, ID format, timestamp
+│
+├── HealthDoc.Dashboard/                        # Internal React/TypeScript SPA (Vite + MSAL)
+│   ├── src/
+│   │   ├── main.tsx                            # MsalProvider wrapper
+│   │   ├── App.tsx                             # Auth gate — login or dashboard
+│   │   ├── authConfig.ts                       # MSAL config, API scope, APIM base URL
+│   │   ├── hooks/useApiToken.ts                # Silent token acquisition with popup fallback
+│   │   └── components/
+│   │       ├── Dashboard.tsx                   # Tab shell — shows logged-in user
+│   │       ├── FailedFilesPanel.tsx            # Failed CSVs with SAS download links
+│   │       └── ResultsPanel.tsx                # Clinic ID search → processed records table
+│   └── .env.example                            # Required env vars (tenant ID, client IDs, APIM URL)
+│
+└── lab_results_2024_05_01.csv                  # Sample input file
+```
+
+---
+
+## The Pipeline
+
+A single CSV upload flows through these steps end-to-end:
+
+1. **Upload** — A partner clinic POSTs a CSV body to `POST /labs/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes it to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client holds this ID to poll status later.
+
+2. **Trigger** — Two things fire simultaneously when the blob lands. `LabResultIngestionTrigger` (BlobTrigger) schedules a `LabResultOrchestrator` instance using the filename as the deterministic instance ID — if a duplicate upload arrives while an instance is still running, it is skipped; if the prior instance reached a terminal state, it is purged first. `EventGridLabResultAuditor` (EventGridTrigger) independently receives the `Microsoft.Storage.BlobCreated` system event and writes a `LabAuditRecord` to the `AuditLog` Cosmos container — providing an audit trail that is completely decoupled from the processing pipeline.
+
+3. **Validate** — The orchestrator calls `ValidateFile`. If required columns are missing or any `Result` field is non-numeric, it calls `MoveFile` to archive the blob to `lab-results-failed` and returns a failed `ProcessingSummary`. No records are processed.
+
+4. **Parse** — `ParseFile` splits the CSV into rows, skips the header, and maps each row to a `LabRecord` via `LabRecord.From(string[])`.
+
+5. **Process (parallel)** — The orchestrator fans out: one `ProcessRecord` activity per `LabRecord`. Each activity calls `ProcessedRecord.From(record)`, which parses the `ReferenceRange` (e.g. `"4.0-5.6"`), determines `IsAbnormal`, and generates a Cosmos-ready document ID.
+
+6. **Persist** — `StoreRecords` writes all `ProcessedRecord` documents to `LabResultRecords` via output binding and invalidates the Redis cache key for the affected clinic, so the next results query fetches fresh data. `StoreSummary` aggregates totals and abnormal counts into a `ProcessingSummary`, writing it to `ProcessingSummaries` with `ConfirmationStatus = Unknown`.
+
+7. **Publish events** — If the batch contains abnormal results, `AbnormalResultEventPublisher` immediately publishes a `HealthDoc.Lab.AbnormalResultDetected` CloudEvent to the Event Grid custom topic, giving any subscriber early notification before the confirmation monitor runs.
+
+8. **Confirm** — The monitor loop calls `CheckStorageConfirmation` up to 10 times with 30-second durable timers between attempts, querying Cosmos directly via the SDK. On success it sets `ConfirmationStatus = Confirmed`; after 10 failures it sets `TimedOut` and delegates the final Cosmos write to `WriteTimeoutSummary`.
+
+9. **Notify** — `BatchCompletePublisher` sends a `BatchCompletedMessage` to the `lab-results-notifications` Service Bus queue — consumed by `ServiceBusLabResultNotifier`. If abnormal results exist, `AbnormalAlertPublisher` sends the same message to the `lab-results-alerts` topic, which fans it out to the `clinical-alerts` subscription (all messages) and `critical-alerts` (SQL filter: `AbnormalCount > 5`). Separately, `DownstreamSystemNotifier` fires from the Cosmos DB trigger on `ProcessingSummaries` and emits a structured event to Application Insights.
+
+10. **Archive** — `MoveFile` copies the blob from `lab-results-incoming` to `lab-results-processed` via server-side copy (`StartCopyFromUriAsync`) and deletes the source.
+
+### Data Models
+
+| Model | Produced by | Consumed by | Key fields |
+|---|---|---|---|
+| `FilePayload` | `LabResultIngestionTrigger` | `LabResultOrchestrator` | `FileName`, `Content` |
+| `FileArchiveRequest` | Orchestrator | `MoveFile` | `FileName`, `TargetContainer`, `Reason` |
+| `ValidationResult` | `ValidateFile` | Orchestrator (gate) | `IsValid`, `Errors` |
+| `LabRecord` | `ParseFile` (via `From`) | `ProcessRecord` | `Result`, `ReferenceRange`, `CollectedAt` |
+| `ProcessedRecord` | `ProcessRecord` (via `From`) | `StoreRecords`, `StoreSummary` | `IsAbnormal`, `Id`, `ProcessedAt` |
+| `ProcessingSummary` | `StoreSummary` | Monitor loop, Service Bus, App Insights | `BatchId`, `AbnormalCount`, `ConfirmationStatus` |
+| `BatchCompletedMessage` | `BatchCompletePublisher` | `ServiceBusLabResultNotifier` | `BatchId`, `ClinicId`, `AbnormalCount` |
+| `AbnormalResultEvent` | `AbnormalResultEventPublisher` | Event Grid subscribers | `BatchId`, `ClinicId`, `AbnormalCount` |
+| `LabAuditRecord` | `EventGridLabResultAuditor` | `AuditLog` Cosmos container | `FileName`, `EventType`, `ReceivedAt` |
+
+`ProcessedRecord` inherits from `LabRecord`. Both expose a static `From(...)` factory so the mapping logic can be unit tested without any Azure dependency.
 
 ---
 
 ## Durable Functions Patterns
 
-Patterns 1–3 are implemented inside `LabResultOrchestrator.cs`. Pattern 4 is a standalone HTTP function in `BatchStatusEndpoint.cs`.
+All four patterns are implemented in this project. Patterns 1–3 are inside `LabResultOrchestrator.cs`; Pattern 4 is `BatchStatusEndpoint.cs`.
 
 ### Pattern 1 — Function Chaining
 
-Activities execute sequentially. The output of each step is the input to the next.
+Activities execute sequentially — the output of each step is the input to the next.
 
 ```
 ValidateFile(payload)
@@ -121,26 +269,26 @@ ValidateFile(payload)
             └─► StoreSummary(records)
 ```
 
-The orchestrator short-circuits immediately if `ValidateFile` returns `IsValid = false`, calling `MoveFile` to archive the blob to `lab-results-failed` and returning a failed `ProcessingSummary` without touching Cosmos DB. This is the **early exit** variant of function chaining.
+The orchestrator short-circuits if `ValidateFile` returns `IsValid = false`: it calls `MoveFile` to archive the blob and returns a failed summary without touching Cosmos DB. This is the **early exit** variant of function chaining.
 
 **Exam concept:** Guaranteed ordering, sequential dependency, deterministic replay.
 
 ### Pattern 2 — Fan-out / Fan-in
 
-Each `LabRecord` parsed from the CSV is dispatched to a `ProcessRecord` activity independently. All N activities run in parallel. `Task.WhenAll` is the fan-in point that blocks until every record is processed before aggregation.
+Each `LabRecord` is dispatched to a `ProcessRecord` activity independently. All N activities run in parallel. `Task.WhenAll` is the fan-in point — the orchestrator blocks here until every record is processed.
 
 ```csharp
-var processingTasks = records.Select(r =>
-    context.CallActivityAsync<ProcessedRecord>("ProcessRecord", r));
+var tasks = records.Select(r =>
+    context.CallActivityAsync<ProcessedRecord>(AppConfig.Activities.ProcessRecord, r));
 
-var results = await Task.WhenAll(processingTasks);  // fan-in
+var results = await Task.WhenAll(tasks);  // fan-in
 ```
 
-**Exam concept:** Parallel activity dispatch, Task.WhenAll, fan-out/fan-in topology.
+**Exam concept:** Parallel activity dispatch, `Task.WhenAll`, fan-out/fan-in topology.
 
 ### Pattern 3 — Monitor
 
-After `StoreSummary` writes to Cosmos DB via output binding, the orchestrator enters a polling loop to confirm the document was fully persisted. It uses a durable timer between checks — not `Thread.Sleep` — so the orchestrator can survive a host restart mid-poll.
+After `StoreSummary` writes to Cosmos, the orchestrator polls until the document is confirmed persisted. It uses durable timers — not `Thread.Sleep` — so the orchestrator survives a host restart mid-poll.
 
 ```
 for attempt in 0..9:
@@ -151,143 +299,40 @@ for attempt in 0..9:
 if not Confirmed → set TimedOut, call WriteTimeoutSummary activity
 ```
 
-On timeout, the orchestrator delegates the final Cosmos write to the `WriteTimeoutSummary` activity rather than performing I/O directly — keeping the orchestrator deterministic and replay-safe.
-
-The `ConfirmationStatus` enum tracks lifecycle: `Unknown → Confirmed | TimedOut`.
+On timeout, the final Cosmos write is delegated to the `WriteTimeoutSummary` activity — not performed by the orchestrator directly — keeping it deterministic and replay-safe.
 
 **Exam concept:** Monitor pattern, durable timers, external resource polling, status tracking.
 
-### Pattern 4 — Async HTTP API (HTTP Polling Consumer)
+### Pattern 4 — Async HTTP API
 
-`GetBatchStatus` exposes a single HTTP endpoint that lets any caller check on an orchestration instance by its ID. The instance ID is the generated blob filename returned by `UploadLabResultsEndpoint` in the upload response — the client receives it as `instanceId` and is responsible for persisting it to poll status later. The function uses the `[DurableClient]` binding to call `GetInstanceAsync`, then maps the runtime status to an appropriate HTTP response:
+`BatchStatusEndpoint` lets any caller check orchestration status by instance ID. The instance ID is the blob filename returned by the upload endpoint — the client holds it and polls until a terminal status arrives.
 
 | Runtime status | HTTP response | Meaning |
 |---|---|---|
-| `Completed` | `200 OK` + serialized output | Pipeline finished — result in body |
-| `Failed` | `500` + serialized output | Orchestrator threw an unhandled exception |
+| `Completed` | `200 OK` + serialized output | Pipeline finished |
+| `Failed` | `500` + serialized output | Orchestrator threw an exception |
 | `Terminated` | `500 Terminated` | Instance was forcibly stopped |
-| Any other | `202 Accepted` | Still running — caller should poll again |
+| Any other | `202 Accepted` | Still running — poll again |
 
-The `202` response is the key exam detail: returning `Accepted` (not `200`) signals to the client that the work is in progress and the same URL should be polled until a terminal status arrives.
+The `202 Accepted` response is the key exam detail: it signals the client to keep polling the same URL.
 
 **Exam concept:** `[DurableClient]` binding, `GetInstanceAsync`, HTTP polling consumer, `OrchestrationRuntimeStatus` values.
 
 ---
 
-## Project Structure
+## Local Development
 
-```
-HealthDoc/
-├── HealthDoc.sln
-│
-├── HealthDoc/                              # Azure Functions isolated worker app
-│   ├── Program.cs                          # DI setup — CosmosClient + BlobServiceClient as singletons
-│   ├── AppConfig.cs                        # Centralized const strings for containers, databases, connections
-│   ├── host.json                           # Application Insights sampling config
-│   ├── Functions/
-│   │   ├── UploadLabResultsEndpoint.cs     # HTTP POST /api/upload → writes blob → triggers pipeline
-│   │   ├── LabResultIngestionTrigger.cs    # BlobTrigger entry point → schedules orchestration
-│   │   ├── LabResultOrchestrator.cs        # Orchestrator (patterns 1–3)
-│   │   ├── BatchStatusEndpoint.cs          # HTTP GET /api/status/{instanceId} (pattern 4)
-│   │   ├── LabResultsEndpoint.cs           # HTTP GET /api/results/{clinicId} → Cosmos query
-│   │   └── DownstreamSystemNotifier.cs     # CosmosDBTrigger → App Insights telemetry
-│   └── Activities/
-│       ├── FileValidator.cs                # ValidateFile — checks headers and data rows
-│       ├── FileParser.cs                   # ParseFile — CSV → List<LabRecord>
-│       ├── LabRecordProcessor.cs           # ProcessRecord — enriches one record
-│       ├── SummaryUpdater.cs               # StoreSummary — Cosmos DB output binding
-│       ├── StorageConfirmationValidator.cs # CheckStorageConfirmation — Cosmos SDK query
-│       ├── TimeoutSummaryWriter.cs         # WriteTimeoutSummary — persists timed-out status
-│       ├── MoveProcessedFile.cs            # MoveFile — server-side blob copy + delete
-│       └── PatientResultUpdater.cs         # StoreRecords — writes ProcessedRecords to LabResultRecords
-│
-├── HealthDoc.Models/                       # Shared models (no Azure dependency)
-│   ├── FilePayload.cs
-│   ├── FileArchiveRequest.cs
-│   ├── LabRecord.cs                        # + static From(string[]) factory
-│   ├── ProcessedRecord.cs                  # + static From(LabRecord) factory
-│   ├── ProcessingSummary.cs
-│   ├── ConfirmationStatus.cs
-│   └── ValidationResult.cs
-│
-├── HealthDoc.Tests/                        # xUnit tests (net10.0)
-│   ├── LabRecordTests.cs
-│   └── ProcessedRecordTests.cs
-│
-├── HealthDoc.Dashboard/                    # Internal React/TypeScript SPA (Vite + MSAL)
-│   ├── src/
-│   │   ├── main.tsx                        # Entry point — MsalProvider wrapper
-│   │   ├── App.tsx                         # Auth gate: login page or Dashboard
-│   │   ├── authConfig.ts                   # MSAL config, API scope, APIM base URL
-│   │   ├── hooks/useApiToken.ts            # Silent token acquisition with popup fallback
-│   │   └── components/
-│   │       ├── Dashboard.tsx               # Tab shell — shows logged-in user
-│   │       ├── FailedFilesPanel.tsx        # Lists failed CSVs with SAS download links
-│   │       └── ResultsPanel.tsx            # Clinic ID search → processed records table
-│   └── .env.example                        # Required env vars (tenant ID, client IDs, APIM URL)
-│
-└── lab_results_2024_05_01.csv             # Sample input file
-```
+### Prerequisites
 
----
+- .NET 10 SDK
+- Azure Functions Core Tools v4
+- Azurite (local storage emulator) or a real Azure Storage account
+- Cosmos DB account
+- Redis (Docker: `docker run -d -p 6379:6379 redis`)
 
-## Data Flow
+### Configuration
 
-1. **Upload** — A partner clinic POSTs a CSV file body to `POST /labs/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes the blob directly to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client persists this ID to poll status later.
-
-2. **Trigger** — `LabResultIngestionTrigger` fires automatically via `BlobTrigger` when the blob lands. It reads the blob content, wraps it in a `FilePayload`, and schedules a new `LabResultOrchestrator` instance using the blob filename as the deterministic instance ID (the same value returned to the client as `instanceId`). If an instance with that ID is still running or pending, the duplicate upload is skipped. If the prior instance has already reached a terminal state, it is purged and a fresh instance is scheduled in its place.
-
-3. **Validate** — The orchestrator calls `ValidateFile`. If required columns are missing or any `Result` field is non-numeric, it calls `MoveFile` to archive the blob to `lab-results-failed` and returns a failed `ProcessingSummary`. No records are processed.
-
-4. **Parse** — `ParseFile` splits the CSV into rows, skips the header, and maps each row to a `LabRecord` via `LabRecord.From(string[])`.
-
-5. **Process (parallel)** — The orchestrator fans out: one `ProcessRecord` activity per `LabRecord`. Each activity calls `ProcessedRecord.From(record)`, which parses the `ReferenceRange` (e.g., `"4.0-5.6"`), determines `IsAbnormal`, and generates a Cosmos-ready document ID.
-
-6. **Persist records** — `StoreRecords` writes the full `ProcessedRecord[]` array to the `LabResultRecords` Cosmos DB container via output binding, creating one document per patient result.
-
-7. **Aggregate** — `StoreSummary` receives the same `ProcessedRecord[]` array, counts totals and abnormals, and writes a `ProcessingSummary` to the `ProcessingSummaries` container via output binding with `ConfirmationStatus = Unknown`.
-
-8. **Confirm** — The monitor loop calls `CheckStorageConfirmation` up to 10 times (30-second durable timers). Each call queries Cosmos DB directly via `CosmosClient`. On success, `ConfirmationStatus` is set to `Confirmed`. After 10 failed attempts, `ConfirmationStatus` is set to `TimedOut` and the orchestrator calls the `WriteTimeoutSummary` activity to persist the timed-out status to Cosmos.
-
-9. **Archive** — `MoveFile` copies the source blob from `lab-results-incoming` to `lab-results-processed` (server-side copy via `StartCopyFromUriAsync`) and deletes it from the source container.
-
-10. **Notify** — `NotifyDownstreamSystems` is triggered automatically by the `CosmosDBTrigger` on `ProcessingSummaries`. It emits a structured `LabResultsProcessed` event to Application Insights for each completed batch.
-
----
-
-## Models
-
-| Model | Produced by | Consumed by | Key fields |
-|---|---|---|---|
-| `FilePayload` | `LabResultIngestionTrigger` | `LabResultOrchestrator` | `FileName`, `Content` |
-| `FileArchiveRequest` | Orchestrator | `MoveFile` | `FileName`, `TargetContainer`, `Reason` |
-| `ValidationResult` | `ValidateFile` | Orchestrator (gate) | `IsValid`, `Errors` |
-| `LabRecord` | `ParseFile` (via `From`) | `ProcessRecord` | `Result`, `ReferenceRange`, `CollectedAt` |
-| `ProcessedRecord` | `ProcessRecord` (via `From`) | `StoreRecords`, `StoreSummary` | `IsAbnormal`, `Id`, `ProcessedAt` |
-| `ProcessingSummary` | `StoreSummary` | Monitor loop → Cosmos DB → `NotifyDownstreamSystems` | `BatchId`, `AbnormalCount`, `ConfirmationStatus` |
-
-`ProcessedRecord` inherits from `LabRecord`. Both expose a static `From(...)` factory method so the mapping logic can be unit tested independently of Azure Functions.
-
----
-
-## Sample CSV
-
-```csv
-ClinicId,PatientId,TestCode,Result,Unit,ReferenceRange,CollectedAt
-CLINIC_001,PAT_123,HBA1C,6.2,%,4.0-5.6,2024-05-01T08:30:00
-CLINIC_001,PAT_124,HBA1C,5.1,%,4.0-5.6,2024-05-01T09:00:00
-CLINIC_001,PAT_125,GLUCOSE,210,mg/dL,70-100,2024-05-01T09:15:00
-```
-
-Rows 1 and 3 will be flagged `IsAbnormal = true` (6.2 > 5.6 and 210 > 100).
-
----
-
-## Running Locally
-
-**Prerequisites:** .NET 10 SDK, Azure Functions Core Tools v4, Azurite or a real Azure Storage account, a Cosmos DB account.
-
-**`local.settings.json`** (not committed — create manually):
+Create `HealthDoc/local.settings.json` (not committed):
 
 ```json
 {
@@ -295,21 +340,45 @@ Rows 1 and 3 will be flagged `IsAbnormal = true` (6.2 > 5.6 and 210 > 100).
   "Values": {
     "AzureWebJobsStorage": "<storage-connection-string>",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "APPLICATIONINSIGHTS_CONNECTION_STRING": "<app-insights-connection-string>",
+
+    "CosmosDBConnectionString": "<cosmos-connection-string>",
+    "CosmosDBEndpoint": "https://<account>.documents.azure.com:443/",
+
     "StorageConnectionString": "<storage-connection-string>",
-    "CosmosDBConnectionString": "<cosmos-connection-string>"
+    "StorageAccountEndpoint": "https://<account>.blob.core.windows.net/",
+
+    "KeyVaultEndpoint": "https://kv-healthdoc-dev.vault.azure.net/",
+
+    "ServiceBusConnectionString": "<service-bus-connection-string>",
+
+    "EventGridTopicEndpoint": "https://<topic>.eventgrid.azure.net/api/events",
+    "EventGridTopicKey": "<topic-access-key>",
+
+    "RedisConnectionString": "localhost:6379"
   }
 }
 ```
 
-Blob Storage containers required:
-- `lab-results-incoming` — upload endpoint writes blobs here; BlobTrigger fires automatically
-- `lab-results-processed` — successfully processed files are moved here
-- `lab-results-failed` — files that fail validation are moved here
+The `CosmosDBConnectionString` and `StorageConnectionString` keys are used by binding attributes (`[CosmosDBOutput]`, `[BlobTrigger]`, etc.) which the Functions runtime resolves. The `Endpoint` variants are used by the SDK clients (`CosmosClient`, `BlobServiceClient`) which authenticate via `DefaultAzureCredential` — run `az login` before starting the host.
 
-Cosmos DB setup required:
-- Database: `LabResults`
-- Container: `ProcessingSummaries` with partition key `/id`
-- Container: `LabResultRecords` with partition key `/ClinicId`
+### Azure Resource Setup
+
+**Blob Storage containers:**
+- `lab-results-incoming` — upload endpoint writes here; BlobTrigger fires automatically
+- `lab-results-processed` — successfully processed files moved here
+- `lab-results-failed` — validation failures moved here
+
+**Cosmos DB — database `LabResults`:**
+- `ProcessingSummaries` — partition key `/id`
+- `LabResultRecords` — partition key `/ClinicId`
+- `AuditLog` — partition key `/ClinicId`
+
+**Service Bus namespace (Standard tier):**
+- Queue: `lab-results-notifications`
+- Topic: `lab-results-alerts` with subscriptions `clinical-alerts` (no filter) and `critical-alerts` (SQL filter: `AbnormalCount > 5`)
+
+### Running
 
 ```bash
 dotnet restore
@@ -318,7 +387,7 @@ cd HealthDoc
 func start --port 7220
 ```
 
-Trigger a run by POSTing a CSV to the upload endpoint:
+Upload a CSV to trigger the full pipeline:
 
 ```bash
 curl -X POST http://localhost:7220/api/upload \
@@ -327,24 +396,39 @@ curl -X POST http://localhost:7220/api/upload \
   --data-binary @lab_results_2024_05_01.csv
 ```
 
-The response returns the `instanceId` to use when polling status:
+Response `201 Created`:
 
 ```json
-{
-    "instanceId": "lab-results-20260508213642-8582e72b.csv"
-}
+{ "instanceId": "lab-results-20260508213642-8582e72b.csv" }
 ```
 
----
+Poll status using the returned `instanceId`:
 
-## Running Tests
+```bash
+curl http://localhost:7220/api/status/lab-results-20260508213642-8582e72b.csv \
+  -H "x-functions-key: <your-local-function-key>"
+```
+
+Returns `202 Accepted` while running, `200 OK` with a `ProcessingSummary` JSON body when complete.
+
+### Sample CSV
+
+```csv
+ClinicId,PatientId,TestCode,Result,Unit,ReferenceRange,CollectedAt
+CLINIC_001,PAT_123,HBA1C,6.2,%,4.0-5.6,2024-05-01T08:30:00
+CLINIC_001,PAT_124,HBA1C,5.1,%,4.0-5.6,2024-05-01T09:00:00
+CLINIC_001,PAT_125,GLUCOSE,210,mg/dL,70-100,2024-05-01T09:15:00
+```
+
+Rows 1 and 3 will be flagged `IsAbnormal = true` (6.2 > 5.6 and 210 > 100), triggering the Service Bus alert topic and Event Grid custom event.
+
+### Tests
 
 ```bash
 dotnet test HealthDoc.Tests/HealthDoc.Tests.csproj
 ```
 
 10 tests across two classes:
-
 - `LabRecordTests` — `From` maps all CSV columns; `From` trims whitespace
 - `ProcessedRecordTests` — base field mapping, composite ID format, `IsAbnormal` boundary cases (in-range, at boundary, below min, above max), `ProcessedAt` timestamp precision
 
@@ -352,445 +436,221 @@ dotnet test HealthDoc.Tests/HealthDoc.Tests.csproj
 
 ## Azure API Management
 
-### Why APIM Exists — The Core Problem It Solves
+APIM sits in front of all HTTP endpoints. External partner clinics use one product; internal staff use another. The Function App URL is never exposed to either — APIM is the only entry point.
 
-Without APIM, your Function App endpoints are exposed directly to the outside world. Any clinic that knows the URL and function key can call them. In a real healthcare system this creates four problems:
+### Why APIM
 
-| Problem | Without APIM | With APIM |
-|---|---|---|
-| **Centralized auth** | Revoking one clinic's access means rotating the Function key — which breaks every other clinic | Each clinic gets its own subscription key; revoke one without touching others |
-| **Rate limiting** | A misbehaving clinic can flood the system with uploads | Per-subscription rate limits enforced at the gateway before requests reach your code |
-| **Visibility** | No easy way to see which clinic is calling which endpoint, how often, or whether they're succeeding | Every request logged with subscription context; Analytics blade shows call volume, latency, errors per operation |
-| **Direct exposure** | External partners know your internal infrastructure details — Azure Functions URLs, routes, versions | The Function App URL becomes an internal implementation detail; clinics only ever see the APIM gateway URL |
-
-The gateway pattern: clinics talk to APIM, APIM talks to your Function App. The `x-functions-key` header is injected by policy — external partners never see it.
-
----
-
-### Public URL vs Internal URL — Hiding Implementation Details
-
-This is one of APIM's core value propositions. The URL a clinic uses and the URL APIM forwards to internally are completely independent:
-
-| | URL |
+| Problem without APIM | Solution with APIM |
 |---|---|
-| **Client calls (public)** | `https://apim-health-doc-prod.azure-api.net/labs/upload` |
-| **APIM forwards to (internal)** | `https://health-doc-bhgtenhbddbmfefr.eastus-01.azurewebsites.net/api/upload` |
+| Revoking one clinic's access means rotating the Function key, breaking all other clinics | Each clinic gets its own subscription key — revoke one without touching others |
+| A misbehaving clinic can flood the system | Per-subscription rate limits enforced at the gateway |
+| No visibility into which clinic calls what, how often | Every request logged with subscription context |
+| External partners can see internal Azure hostnames and routes | The Function App URL is an internal detail — clinics only see the APIM gateway URL |
 
-The `/labs` prefix is a domain concept — it describes what the API does from the client's perspective. The `/api` prefix is an Azure Functions implementation detail. APIM maps between them so the two never leak into each other.
+### Public vs Internal URL
 
-This decoupling has real consequences:
-- You could migrate from Azure Functions to Azure Container Apps and clients would never know — just update the backend URL in APIM
-- You could version your API (`/labs/v2/...`) without changing your Function routes
-- The internal hostname, which exposes that you're running on Azure and reveals the region (`eastus`), is never visible to external partners
+```
+Client calls:    https://apim-healthdoc-dev.azure-api.net/labs/upload
+APIM forwards:   https://<func-app>.azurewebsites.net/api/upload
+```
 
-In this project the mapping is configured by setting the **Web service URL** to `https://<func-app>.azurewebsites.net/api` — the Azure Functions route prefix is absorbed into the backend base URL once, so operation overrides stay clean (`/upload`, `/status/{id}`, `/results/{clinicId}`).
+The `/labs` prefix is a domain concept visible to clients. The `/api` prefix is an Azure Functions implementation detail. Setting the **Web service URL** to `https://<func-app>.azurewebsites.net/api` absorbs the Functions prefix once — operation URL overrides stay clean (`/upload`, `/status/{id}`, `/results/{clinicId}`).
 
----
+### Portal Setup
 
-APIM sits in front of all three HTTP endpoints, adding subscription-key authentication, rate limiting, response caching, and a clean public URL that decouples clinics from the Function App's internal host key.
+#### Step 1 — Create the APIM Instance
 
-**AZ-204 exam concepts covered:** products, subscriptions, named values, API-level policies, operation-level policies, `rate-limit-by-key`, `cache-lookup`/`cache-store`, `set-header`, `choose`/`return-response`.
-
----
-
-### Step 1 — Create the APIM Instance
-
-In the Azure portal: search **API Management** → **Create**.
+Search **API Management** → **Create**.
 
 | Field | Value |
 |---|---|
-| Subscription / Resource group | your existing RG |
-| Resource name | `apim-healthdoc-dev` (must be globally unique) |
+| Resource name | `apim-healthdoc-dev` (globally unique) |
 | Region | same as your Function App |
 | Pricing tier | **Consumption** |
 | Organization name | HealthDoc |
-| Administrator email | your email |
 
-> Consumption tier is pay-per-call (like Azure Functions) — no hourly charge, ideal for study. Provisioning takes ~5 minutes.
+> Consumption tier is pay-per-call with no hourly charge — ideal for study. Provisioning takes ~5 minutes.
 
-**AZ-204 SKU comparison — know this for the exam:**
+**AZ-204 SKU comparison:**
 
 | Tier | Cold starts | VNet support | Scale | Best for |
 |---|---|---|---|---|
-| Consumption | Yes (~2 s) | No | Auto | Dev, testing, low traffic |
-| Developer | No | Yes (ext/int) | Manual | Non-production exploration |
+| Consumption | Yes (~2 s) | No | Auto | Dev, testing |
+| Developer | No | Yes | Manual | Non-production exploration |
 | Basic | No | No | Manual | Low-traffic production |
 | Standard | No | No | Manual | Medium production |
-| Premium | No | Yes (ext/int) | Manual + zone redundancy | Enterprise production |
+| Premium | No | Yes | Manual + zone redundancy | Enterprise production |
 
----
+#### Step 2 — Create the Named Value for the Function Key
 
-### Step 2 — Create a Named Value for Your Function Key
+Named values are APIM's encrypted key-value store. Policies reference them as `{{Name}}` — the value is never visible to callers.
 
-Named values are APIM's encrypted key-value store. Policy XML references them as `{{Name}}` — the value is never exposed to callers.
-
-1. In your APIM instance → **Named values** → **Add**
-2. Fill in:
+**Named values** → **Add**:
 
 | Field | Value |
 |---|---|
 | Name | `FunctionAppKey` |
-| Display name | `FunctionAppKey` |
 | Type | **Secret** |
-| Value | your Function App host key (Function App → **App keys** → `default`) |
+| Value | Function App host key (Function App → **App keys** → `default`) |
 
----
+#### Step 3 — Create the Lab Results API
 
-### Step 3 — Create the Lab Results API
-
-1. **APIs** → **Add API** → **HTTP**
-2. Fill in:
+**APIs** → **Add API** → **HTTP**:
 
 | Field | Value |
 |---|---|
 | Display name | `Lab Results API` |
-| Name | `lab-results-api` |
 | Web service URL | `https://<your-func-app>.azurewebsites.net/api` |
 | API URL suffix | `labs` |
 
-Including `/api` in the Web service URL means the Azure Functions route prefix is set once here rather than repeated in every operation's backend URL override.
+Add three operations:
 
-All operations on this API are now accessible at `https://<apim>.azure-api.net/labs/...`.
+| Operation | Method | URL |
+|---|---|---|
+| Upload Lab Results | `POST` | `/upload` |
+| Get Processing Status | `GET` | `/status/{instanceId}` |
+| Get Lab Results | `GET` | `/results/{clinicId}` |
 
----
+#### Step 4 — Apply Policies
 
-### Step 4 — Add the Three Operations
-
-#### Operation 1 — Upload Lab Results
-
-| Field | Value |
-|---|---|
-| Display name | Upload Lab Results |
-| Method | `POST` |
-| URL | `/upload` |
-| Backend URL override | `/upload` |
-
-#### Operation 2 — Get Processing Status
-
-| Field | Value |
-|---|---|
-| Display name | Get Processing Status |
-| Method | `GET` |
-| URL | `/status/{instanceId}` |
-| Backend URL override | `/status/{instanceId}` |
-
-#### Operation 3 — Get Lab Results
-
-| Field | Value |
-|---|---|
-| Display name | Get Lab Results |
-| Method | `GET` |
-| URL | `/results/{clinicId}` |
-| Backend URL override | `/results/{clinicId}` |
-
----
-
-### Step 5 — Apply Policies
-
-#### API-level policy (applies to all three operations)
-
-Select the API → **Design** tab → **All operations** → **Policies** (the `</>` icon).
+**API-level policy** (all operations):
 
 ```xml
 <policies>
     <inbound>
         <base />
-
-        <!-- Authenticate to Function App using stored named value -->
-        <!-- Clinic never sees this key — it stays inside APIM -->
         <set-header name="x-functions-key" exists-action="override">
             <value>{{FunctionAppKey}}</value>
         </set-header>
-
-        <!-- Tag every request with the clinic's subscription ID for tracing -->
         <set-header name="x-clinic-id" exists-action="override">
             <value>@(context.Subscription.Id)</value>
         </set-header>
-
     </inbound>
-    <backend>
-        <base />
-    </backend>
     <outbound>
         <base />
-        <!-- Strip internal headers before returning response to clinic -->
         <set-header name="x-functions-key" exists-action="delete" />
         <set-header name="x-powered-by" exists-action="delete" />
     </outbound>
-    <on-error>
-        <base />
-    </on-error>
 </policies>
 ```
 
-#### Operation-level policy — Upload only (rate limiting + size guard)
-
-Select the **Upload Lab Results** operation → **Policies**.
+**Operation-level — Upload** (rate limit + Content-Type guard):
 
 ```xml
-<policies>
-    <inbound>
-        <base />
-
-        <!-- Limit each clinic to 10 uploads per minute -->
-        <!-- counter-key uses the subscription ID so each clinic has its own counter -->
-        <!-- NOTE: rate-limit-by-key is not supported on the Consumption tier -->
-        <!-- Requires Developer tier or above — include here as a study reference -->
-        <rate-limit-by-key
-            calls="10"
-            renewal-period="60"
-            counter-key="@(context.Subscription.Id)"
-            increment-condition="@(context.Response.StatusCode == 201)"
-        />
-
-        <!-- Reject requests that are not CSV -->
-        <!-- Content-Length is unreliable for streaming uploads — validate Content-Type instead -->
-        <choose>
-            <when condition='@(!context.Request.Headers.GetValueOrDefault("Content-Type", "").Contains("text/csv"))'>
-                <return-response>
-                    <set-status code="415" reason="Unsupported Media Type" />
-                    <set-body>Content-Type must be text/csv</set-body>
-                </return-response>
-            </when>
-        </choose>
-
-    </inbound>
-    <backend>
-        <base />
-    </backend>
-    <outbound>
-        <base />
-    </outbound>
-    <on-error>
-        <base />
-    </on-error>
-</policies>
+<inbound>
+    <base />
+    <!-- rate-limit-by-key requires Developer tier or above; included here as a study reference -->
+    <rate-limit-by-key calls="10" renewal-period="60"
+        counter-key="@(context.Subscription.Id)"
+        increment-condition="@(context.Response.StatusCode == 201)" />
+    <choose>
+        <when condition='@(!context.Request.Headers.GetValueOrDefault("Content-Type", "").Contains("text/csv"))'>
+            <return-response>
+                <set-status code="415" reason="Unsupported Media Type" />
+                <set-body>Content-Type must be text/csv</set-body>
+            </return-response>
+        </when>
+    </choose>
+</inbound>
 ```
 
-#### Operation-level policy — Get Lab Results (caching)
-
-Select the **Get Lab Results** operation → **Policies**.
-
-> **Note — Consumption tier:** `cache-lookup` / `cache-store` are supported on all tiers including Consumption, but the Consumption tier has no built-in cache. Without an external Redis Cache configured (APIM → **External cache**), these policies are accepted but silently do nothing. To enable caching on Consumption, provision an Azure Cache for Redis and link it under External cache. On Developer tier and above the built-in cache works with no additional setup.
+**Operation-level — Get Lab Results** (response caching):
 
 ```xml
-<policies>
-    <inbound>
-        <base />
-
-        <!-- Check cache before calling Function App -->
-        <!-- Cache key = full request URL by default, so /results/CLINIC_001 and      -->
-        <!-- /results/CLINIC_002 automatically get separate cache entries — no extra   -->
-        <!-- configuration needed because clinicId is already in the path.             -->
-        <!-- If clinicId were a query parameter (?clinicId=X) instead, you would need -->
-        <!-- to add <vary-by-query-parameter>clinicId</vary-by-query-parameter> here.  -->
-        <cache-lookup vary-by-developer="false"
-                      vary-by-developer-groups="false"
-                      allow-private-response-caching="true">
-        </cache-lookup>
-
-    </inbound>
-    <backend>
-        <base />
-    </backend>
-    <outbound>
-        <base />
-
-        <!-- Store the response in cache for 60 seconds -->
-        <cache-store duration="60" />
-
-    </outbound>
-    <on-error>
-        <base />
-    </on-error>
-</policies>
+<inbound>
+    <base />
+    <!-- cache-lookup is a no-op on Consumption without an External Cache linked -->
+    <!-- link Redis under APIM → External cache to activate on Consumption tier  -->
+    <cache-lookup vary-by-developer="false" vary-by-developer-groups="false"
+                  allow-private-response-caching="true" />
+</inbound>
+<outbound>
+    <base />
+    <cache-store duration="60" />
+</outbound>
 ```
 
----
+#### Step 5 — Create Products and Subscriptions
 
-### Step 6 — Create a Product and Subscription
-
-**Create the product:**
-
-1. **Products** → **Add**
-2. Fill in:
+**Clinic Standard product** (external clinics):
 
 | Field | Value |
 |---|---|
 | Display name | `Clinic Standard` |
-| Id | `clinic-standard` |
-| Description | `Standard access tier for registered clinics. Provides authenticated upload, status polling, and results retrieval. Each clinic receives a unique subscription key.` |
-| Requires subscription | ✅ checked |
-| Requires approval | unchecked |
-| State | Published |
+| Requires subscription | ✅ |
+| APIs | Lab Results API |
 
-3. Under **APIs**, add **Lab Results API** to the product.
-
-**Create a test subscription:**
-
-1. **Subscriptions** → **Add**
-2. Fill in:
-
-| Field | Value |
-|---|---|
-| Name | `clinic-001-test` |
-| Display name | `CLINIC_001 Test` |
-| Scope | Product → `Clinic Standard` |
-
-3. Save, then click **...** → **Show/hide keys** → copy the primary key.
+Create one subscription per clinic (`clinic-001-test`, scope: Clinic Standard). Each clinic receives a unique key — revoke one without affecting others.
 
 ---
 
-### Step 7 — Test Through APIM
+## Authentication & Security
 
-Use the built-in APIM test console (**APIs** → **Lab Results API** → **Test** tab) or Postman.
+HealthDoc uses three distinct authentication models depending on who is calling and what they need.
 
-**Upload a CSV:**
+### External Clinics: Subscription Keys
 
-```
-POST https://<apim>.azure-api.net/labs/upload
-Ocp-Apim-Subscription-Key: <your-subscription-key>
-Content-Type: text/csv
+Partner clinics authenticate with an `Ocp-Apim-Subscription-Key` header. Subscription keys are the right choice here because the unit of identity is the clinic as a whole — one key per clinic, provisioned and revoked by the platform team, with no requirement for clinics to adopt any identity provider.
 
-ClinicId,PatientId,TestCode,Result,Unit,ReferenceRange,CollectedAt
-CLINIC_001,PAT_123,HBA1C,6.2,%,4.0-5.6,2024-05-01T08:30:00
-CLINIC_001,PAT_124,HBA1C,5.1,%,4.0-5.6,2024-05-01T09:00:00
-CLINIC_001,PAT_125,GLUCOSE,210,mg/dL,70-100,2024-05-01T09:15:00
-```
-
-Response `201 Created`:
-```json
-{
-    "instanceId": "lab-results-20260508213642-8582e72b.csv"
-}
-```
-
-**Poll status** (use the `instanceId` from the upload response):
-
-```
-GET https://<apim>.azure-api.net/labs/status/lab-results-20240501143022-a3f9b21c.csv
-Ocp-Apim-Subscription-Key: <your-subscription-key>
-```
-
-Returns `202 Accepted` while running, `200 OK` with `ProcessingSummary` JSON when complete.
-
-**Query results for the clinic:**
-
-```
-GET https://<apim>.azure-api.net/labs/results/CLINIC_001
-Ocp-Apim-Subscription-Key: <your-subscription-key>
-```
-
-**Verify rate limiting** — send the upload request 11+ times within a minute; calls beyond 10 should return `429 Too Many Requests`.
-
----
-
-## Azure Security (AZ-204 — Implement Azure Security)
-
-This section adds MSAL-authenticated access for internal users via a React SPA, plus JWT validation on APIM so the same Azure AD token authorizes the call end-to-end.
-
-### Why Subscription Keys for External Clinics, JWT for Internal Users?
-
-External clinics use **APIM subscription keys** (`Ocp-Apim-Subscription-Key`). This is the right fit here because the unit of identity is the clinic itself — one key per clinic, provisioned and revoked by the platform team. It's simple, doesn't require clinics to adopt any identity provider, and APIM manages the lifecycle natively.
-
-Internal users use **JWT tokens** issued by Azure AD. Internal users have individual identities (their org account), so a shared key would be a step backwards — you'd lose the ability to know *who* acted, not just *which system*.
-
-The key distinction: **subscription keys authenticate a system; JWT tokens authenticate a person.**
-
-### When Would JWT Add Value for External Clinics?
-
-There are scenarios where you'd want to move external clinics off subscription keys and onto JWT:
+**When JWT would be better than subscription keys:**
 
 | Scenario | Why JWT wins |
 |---|---|
-| **Multiple users per clinic** | A clinic has admins and read-only staff — JWT claims/roles let APIM or the backend enforce per-user permissions. Subscription keys give everyone at that clinic identical access. |
-| **The clinic already has an Azure AD tenant** | You can configure B2B federation so clinics log in with *their own* org credentials. No separate credentials to provision or rotate. |
-| **Audit and compliance requirements** | JWT carries a user identity (`sub`, `oid` claims). You can log exactly which person uploaded a file, not just which clinic. Subscription keys only tell you the clinic. |
-| **Short-lived credential requirements** | Tokens expire (typically 1 hour) and refresh automatically via MSAL. Subscription keys are long-lived and require manual rotation if compromised. |
-| **Delegated access** | A clinic could grant a third-party billing system scoped access to their results only, using OAuth scopes. Subscription keys are all-or-nothing. |
+| **Multiple users per clinic** | JWT claims/roles allow per-user permissions; subscription keys give all clinic staff identical access |
+| **Clinic has an Azure AD tenant** | B2B federation lets clinics log in with their own org credentials |
+| **Audit requirements** | JWT carries `sub`/`oid` claims — log exactly who uploaded, not just which clinic |
+| **Short-lived credentials** | Tokens expire (typically 1 hour) and refresh automatically; subscription keys require manual rotation if compromised |
 
-In this project, clinics are external organizations with no Azure AD relationship, and the unit of trust is the clinic as a whole — so subscription keys are the correct and simpler choice. The `validate-jwt` policy is applied to the internal dashboard product, where individual identity and Azure AD integration are natural fits.
+**The key distinction: subscription keys authenticate a system; JWT tokens authenticate a person.** In this project, clinics are the unit of trust — subscription keys are correct and simpler.
 
-### Architecture
+### Internal Users: Azure AD & MSAL
+
+Internal staff access the dashboard through a React SPA that authenticates with Azure AD via MSAL, then passes the access token to APIM, where a `validate-jwt` policy verifies it before the request reaches the Function App.
 
 ```
 Internal User
    │
    ▼
-HealthDoc.Dashboard (React + MSAL)          ← HealthDoc.Dashboard/
-   │ 1. MSAL login (auth code + PKCE)
+HealthDoc.Dashboard (React + MSAL)
+   │ 1. Authorization code + PKCE flow
    │ 2. Acquire access token (LabResults.Read scope)
    │ 3. GET /labs/failed-files or /labs/results/{clinicId}
    │    Authorization: Bearer <token>
    ▼
-APIM — "Internal Dashboard" product (subscriptionRequired: false)
-   │ validate-jwt policy → Azure AD OIDC config
-   │ x-functions-key injected (existing API-level policy)
+APIM — Internal Dashboard product
+   │ validate-jwt → Azure AD OIDC config
+   │ x-functions-key injected (API-level policy)
    ▼
 Function App
-   ├── GET /api/blobs/failed   → FailedLabFilesEndpoint.cs  (list + SAS URLs)
-   └── GET /api/results/{clinicId}  → LabResultsEndpoint.cs (existing)
+   ├── GET /api/blobs/failed   → FailedLabFilesEndpoint
+   └── GET /api/results/{clinicId}  → LabResultsEndpoint
 ```
 
-### Step 1 — Azure AD App Registrations (Azure Portal)
+#### App Registrations
 
-**Register the API app (`HealthDoc-API`):**
-1. Azure Active Directory → App registrations → New registration
-2. Name: `HealthDoc-API`, supported account types: single tenant
-3. After creating: Expose an API → Add a scope
-   - Scope name: `LabResults.Read`
-   - Who can consent: Admins and users
-   - Save — note the `api://<api-client-id>` Application ID URI
+**Register `HealthDoc-API`:**
+1. Azure Active Directory → App registrations → New registration (single tenant)
+2. Expose an API → Add a scope: `LabResults.Read`, who can consent: Admins and users
+3. Note the `api://<api-client-id>` Application ID URI
 
-**Register the SPA app (`HealthDoc-Dashboard`):**
-1. New registration — Name: `HealthDoc-Dashboard`, single tenant
+**Register `HealthDoc-Dashboard`:**
+1. New registration (single tenant)
 2. Add platform: Single-page application, redirect URI: `http://localhost:5173`
-3. API permissions → Add permission → My APIs → `HealthDoc-API` → `LabResults.Read` → Grant admin consent
+3. API permissions → `HealthDoc-API` → `LabResults.Read` → Grant admin consent
 
-### Step 2 — APIM Named Values
+#### APIM Internal Dashboard Product
 
-In Azure Portal → APIM → Named values, add:
+**Products** → **Add**:
 
-| Name | Value |
+| Field | Value |
 |---|---|
-| `TenantId` | Your Azure AD tenant ID |
-| `ApiClientId` | Client ID of the `HealthDoc-API` registration |
+| Display name | `Internal Dashboard` |
+| Requires subscription | **off** |
+| Published | on |
 
-### Step 3 — APIM Internal Dashboard Product
+Add two operations: `GET /labs/failed-files` and `GET /labs/results/{clinicId}`.
 
-1. APIM → Products → Add
-   - Name: `Internal Dashboard`
-   - Description: `Internal access for authenticated staff. Provides read access to processed results and failed file inspection. Secured via Azure AD JWT validation — no subscription key required.`
-   - `subscriptionRequired`: **off**
-   - Published: on
-
-2. Add two operations to this product (same API as the existing "External Clinics" product):
-   - **List Failed Files**: `GET /labs/failed-files` → backend `GET /api/blobs/failed`
-   - **Get Lab Results**: `GET /labs/results/{clinicId}` → backend `GET /api/results/{clinicId}` (reuse)
-
-3. Set inbound policy **on the product** — not on the API:
-
-> **Important:** This policy must be applied at the product level, not the API level. API-level policies run for every request regardless of which product it came through — placing `validate-jwt` there would require external clinics to present a JWT token in addition to their subscription key, breaking their access. Product-level policies only run for requests that arrive through that specific product, keeping the two access models independent.
-
-#### APIM Policy Execution Order
-
-Policies do not override each other — they **stack**. Every request passes through all three layers in sequence:
-
-```
-Product policy  →  API policy  →  Operation policy  →  Backend
-```
-
-For a clinic uploading a CSV (Clinic Standard product):
-1. **Product** — subscription key validated automatically (`subscriptionRequired: true`)
-2. **API** — `x-functions-key` injected, `x-clinic-id` tagged, response headers cleaned
-3. **Operation** — `rate-limit-by-key` enforced, Content-Type validated
-
-For an internal user fetching results (Internal Dashboard product):
-1. **Product** — `validate-jwt` checks the Azure AD bearer token
-2. **API** — `x-functions-key` injected, response headers cleaned
-3. **Operation** — (none configured)
-
-This is why `validate-jwt` must live at the product level rather than the API level. If it were placed at the API level it would sit in step 2 for both products, forcing external clinics to present a JWT token on top of their subscription key.
+Apply the `validate-jwt` policy **at the product level** — not the API level:
 
 ```xml
 <validate-jwt header-name="Authorization"
@@ -803,166 +663,111 @@ This is why `validate-jwt` must live at the product level rather than the API le
 </validate-jwt>
 ```
 
-The existing API-level inbound policy already injects `x-functions-key`, so no change needed there.
+Add named values `TenantId` and `ApiClientId` for the policy to reference.
 
-### Step 4 — Frontend Setup
+> **Why product level, not API level?** Policies stack — every request passes through `Product → API → Operation` in sequence. If `validate-jwt` were placed at the API level, it would run for both products, forcing external clinics to present a JWT token on top of their subscription key. At the product level it only runs for requests that arrive through the Internal Dashboard product.
+
+**Policy execution order for each product:**
+
+| Layer | Clinic Standard | Internal Dashboard |
+|---|---|---|
+| Product | Subscription key validated | `validate-jwt` checks Azure AD token |
+| API | `x-functions-key` injected, headers cleaned | `x-functions-key` injected, headers cleaned |
+| Operation | Rate limit + Content-Type guard (upload only) | — |
+
+#### Frontend Setup
 
 ```bash
 cd HealthDoc.Dashboard
 cp .env.example .env
-# Fill in your tenant ID and client IDs in .env
+# Fill in VITE_TENANT_ID, VITE_SPA_CLIENT_ID, VITE_API_CLIENT_ID, VITE_APIM_BASE_URL
 npm install
 npm run dev
 ```
 
-Then navigate to `http://localhost:5173`. Click **Sign In**, complete Azure AD authentication, and the dashboard loads with two tabs:
-
-- **Failed Files** — lists CSVs that failed validation, with a one-hour SAS download link each
+Navigate to `http://localhost:5173`. After signing in, the dashboard shows two tabs:
+- **Failed Files** — lists CSVs that failed validation with a one-hour SAS download link each
 - **Lab Results** — enter a Clinic ID to query processed records
 
-### Verify End-to-End
+**Verify end-to-end:**
+1. Upload an invalid CSV — it lands in `lab-results-failed`
+2. Sign in to the dashboard, open **Failed Files** — the file appears with a working download link
+3. Call `GET /labs/failed-files` without a token → `401 Unauthorized`
+4. Call the same endpoint with a valid token (copy from browser DevTools) → `200 OK`
 
-1. Upload an invalid CSV (missing columns) via the existing APIM upload endpoint — it lands in `lab-results-failed`
-2. Sign in to the dashboard, open **Failed Files** — the file should appear with a working download link
-3. Call `GET https://<apim>.azure-api.net/labs/failed-files` **without** a token → expect `401 Unauthorized`
-4. Call the same endpoint **with** a valid token (copy from browser DevTools Network tab) → expect `200 OK`
+### Application Identity: Key Vault & Managed Identity
 
----
+The Function App itself authenticates to Cosmos DB, Blob Storage, and Key Vault using its Managed Identity — no connection strings or shared keys anywhere in deployed code.
 
-## Azure Key Vault & Managed Identity
-
-### Why Plaintext Secrets Are the Problem
-
-The original `local.settings.json` stored connection strings containing real account keys. Any developer who clones the repo, any CI log that prints environment variables, any accidental git commit of the file — all of these expose credentials that give full access to the storage account and Cosmos DB database. Key Vault and Managed Identity solve this at both layers:
+**The problem with plaintext credentials:** Connection strings stored in app settings, environment variables, or accidentally committed config files give full storage account and database access to anyone who reads them. Key Vault and Managed Identity eliminate the secret entirely from the deployed environment.
 
 | Layer | Problem | Solution |
 |---|---|---|
-| **At rest** | Connection strings stored in config files, app settings, or environment variables | Secrets stored in Key Vault; app settings hold a reference, not the value |
-| **In transit** | App authenticates to Azure services using a shared key anyone can copy | App authenticates using its Azure identity — no secret to steal or rotate |
+| **At rest** | Secrets in config files and app settings | Secrets stored in Key Vault; app settings hold a reference, not the value |
+| **In transit** | App authenticates with a shared key anyone can copy | App authenticates using its Azure identity — no secret to steal or rotate |
 
-### What Changed in This Project
+#### What Changed in Code
 
-**`Program.cs`** — `CosmosClient` and `BlobServiceClient` now authenticate with `DefaultAzureCredential` and a service endpoint URI instead of a connection string:
+`Program.cs` registers both SDK clients using `DefaultAzureCredential` and a service endpoint URI instead of a connection string:
 
 ```csharp
 var credential = new DefaultAzureCredential();
 
-// CosmosClient — no key, no connection string
+// No connection string — authenticates via Managed Identity (Azure) or az login (local)
 new CosmosClient(endpoint, credential);
-
-// BlobServiceClient — no key, no connection string
 new BlobServiceClient(new Uri(endpoint), credential);
 ```
 
-**Binding attributes** (`[CosmosDBTrigger]`, `[CosmosDBOutput]`, `[BlobTrigger]`) still reference a named connection string because the Functions runtime resolves these — not the SDK. In Azure, those app settings are Key Vault references that the runtime transparently resolves before passing to the binding provider. Locally, they remain plaintext in `local.settings.json` which is never committed.
+Binding attributes (`[CosmosDBOutput]`, `[BlobTrigger]`, etc.) still reference named connection string settings because the Functions runtime resolves these — not the SDK. In Azure, those app settings are Key Vault references that the runtime resolves transparently before passing to the binding provider.
 
-**`local.settings.json` additions:**
+#### DefaultAzureCredential Chain
 
-```json
-"CosmosDBEndpoint": "https://<account>.documents.azure.com:443/",
-"StorageAccountEndpoint": "https://<account>.blob.core.windows.net/",
-"KeyVaultEndpoint": "https://kv-healthdoc-dev.vault.azure.net/"
-```
+`DefaultAzureCredential` tries credential sources in order, using the first that succeeds:
 
-### DefaultAzureCredential Chain
-
-`DefaultAzureCredential` tries these credential sources in order and uses the first that succeeds:
-
-| Order | Credential type | When it applies |
+| Order | Source | When it applies |
 |---|---|---|
-| 1 | Environment credential | `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` set |
-| 2 | Workload Identity | Azure Kubernetes Service with federated credentials |
-| 3 | Managed Identity | Running inside Azure (App Service, Functions, VM, ACI) |
-| 4 | Visual Studio credential | Signed in to Visual Studio |
-| 5 | Azure CLI credential | `az login` has been run locally |
-| 6 | Azure PowerShell credential | `Connect-AzAccount` has been run locally |
-| 7 | Interactive browser | Falls back to browser login if nothing else works |
+| 1 | Environment | `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` set |
+| 2 | Workload Identity | AKS with federated credentials |
+| 3 | **Managed Identity** | Running inside Azure (Functions, App Service, VM) |
+| 4 | Visual Studio | Signed in to Visual Studio |
+| 5 | **Azure CLI** | `az login` has been run |
+| 6 | Azure PowerShell | `Connect-AzAccount` has been run |
+| 7 | Interactive browser | Fallback |
 
-In this project: locally → credential #5 (`az login`). In Azure → credential #3 (Managed Identity). No code change needed between environments.
+In this project: locally → #5 (`az login`). In Azure → #3 (Managed Identity). No code change between environments.
 
-### Azure Portal Setup — Step by Step
+#### Portal Setup
 
-#### Step 1 — Create the Key Vault
+**Create Key Vault** (`kv-healthdoc-dev`, Standard tier, soft-delete and purge protection enabled).
 
-Search **Key Vault** → **Create**.
-
-| Field | Value |
-|---|---|
-| Resource group | same as Function App |
-| Name | `kv-healthdoc-dev` (globally unique) |
-| Region | same region as all other resources |
-| Pricing tier | Standard |
-| Soft-delete | enabled (default) — protects against accidental deletion |
-| Purge protection | enabled — prevents hard-delete during retention period |
-
-#### Step 2 — Store Secrets
-
-Key Vault → **Secrets** → **Generate/Import** for each:
+**Add secrets:**
 
 | Secret name | Value |
 |---|---|
-| `CosmosDBConnectionString` | Full Cosmos DB connection string (from Cosmos DB → Keys) |
-| `StorageConnectionString` | Full storage account connection string (from Storage → Access keys) |
+| `CosmosDBConnectionString` | Full Cosmos connection string |
+| `StorageConnectionString` | Full storage account connection string |
 
-#### Step 3 — Enable System-Assigned Managed Identity
+**Enable system-assigned Managed Identity:** Function App → **Identity** → **System assigned** → On.
 
-Function App → **Identity** → **System assigned** → **Status: On** → Save.
+**Grant RBAC roles:**
 
-Azure creates a service principal in Azure AD with the same name as the Function App. This identity is the "who" for all RBAC role assignments below.
-
-**System-assigned vs user-assigned (exam concept):**
-
-| | System-assigned | User-assigned |
+| Resource | Role | Assignee |
 |---|---|---|
-| Lifecycle | Tied to the resource — deleted with the Function App | Independent — persists if the resource is deleted |
-| Sharing | One identity per resource | One identity can be assigned to many resources |
-| Best for | Single-resource use, simple setup | Shared identity across resources, pre-provisioned credentials |
+| Key Vault | `Key Vault Secrets User` | Function App identity |
+| Cosmos DB account | `Cosmos DB Built-in Data Contributor` | Function App identity |
+| Storage account | `Storage Blob Data Contributor` | Function App identity |
 
-This project uses system-assigned because the identity is only needed by this one Function App.
+> **RBAC vs Access Policies:** Key Vault supports both models. Access policies are vault-level and older; Azure RBAC is consistent with all other Azure resources and the recommended approach. Know both for the exam.
 
-#### Step 4 — Grant Key Vault Access
+> **System-assigned vs user-assigned identity:** System-assigned is tied to the resource and deleted with it — best for single-resource use. User-assigned is independent and can be shared across multiple resources — best for shared credentials or pre-provisioned scenarios.
 
-Key Vault → **Access control (IAM)** → **Add role assignment**:
-
-| Field | Value |
-|---|---|
-| Role | `Key Vault Secrets User` |
-| Assign access to | Managed Identity |
-| Members | Select your Function App |
-
-> **RBAC vs Access Policies:** Key Vault supports two permission models. The older model is **access policies** (vault-level; grant/deny per principal per secret). The newer model is **Azure RBAC** (consistent with all other Azure resources; use role assignments). RBAC is the recommended approach and what this project uses. Both appear on the AZ-204 exam — know the difference.
-
-#### Step 5 — Grant Cosmos DB Access
-
-Cosmos DB account → **Access control (IAM)** → **Add role assignment**:
-
-| Role | Assignee |
-|---|---|
-| `Cosmos DB Built-in Data Contributor` | Function App Managed Identity |
-
-This role allows read and write to data plane (documents). It does NOT allow management plane operations (creating databases, changing throughput, etc.) — principle of least privilege.
-
-#### Step 6 — Grant Blob Storage Access
-
-Storage account → **Access control (IAM)** → **Add role assignment**:
-
-| Role | Assignee |
-|---|---|
-| `Storage Blob Data Contributor` | Function App Managed Identity |
-
-#### Step 7 — Replace App Settings with Key Vault References
-
-Function App → **Configuration** → **Application settings**.
-
-For each connection string setting, replace the raw value with a Key Vault reference in this format:
+**Replace App Settings with Key Vault references:** Function App → **Configuration** → replace each connection string value with:
 
 ```
 @Microsoft.KeyVault(VaultName=kv-healthdoc-dev;SecretName=CosmosDBConnectionString)
 ```
 
-The Functions runtime resolves the reference at startup. The app code reads `Environment.GetEnvironmentVariable("CosmosDBConnectionString")` and receives the secret value — no SDK change needed for the binding layer.
-
-Also add the two new endpoint settings:
+Also add the endpoint settings:
 
 | Name | Value |
 |---|---|
@@ -973,31 +778,25 @@ Also add the two new endpoint settings:
 
 ## Azure Service Bus
 
-### Why Service Bus (and not just the Cosmos DB trigger)?
+### Queues, Topics, and the Cosmos DB Trigger
 
-The existing `DownstreamSystemNotifier` already handles post-processing notifications via a Cosmos DB trigger. Service Bus solves a different class of problem:
+The existing `DownstreamSystemNotifier` handles post-processing notifications via a Cosmos DB trigger. Service Bus is a separate exam topic covering durable messaging — it solves a different class of problem:
 
 | Concern | Cosmos DB trigger | Service Bus |
 |---|---|---|
+| **Consumer model** | All trigger instances receive all changes | Queue: one consumer per message; topic: each subscription gets its own copy |
+| **Filtering** | None | SQL expressions on subscriptions |
 | **Delivery guarantee** | At-least-once, tied to change feed | At-least-once with configurable retry and DLQ |
-| **Consumer model** | All trigger instances receive all changes | Competing consumers — one message processed by exactly one consumer |
-| **Fan-out** | All trigger instances process the same document | Topics fan out to multiple independent subscriptions simultaneously |
-| **Filtering** | None — all documents in the container trigger | SQL filters on subscriptions route messages by content |
-| **Decoupling** | Consumer must know the Cosmos account | Consumer only needs a connection string to the namespace |
-| **Cross-system** | Cosmos-native — hard to bridge to non-Azure consumers | Any system that supports AMQP or HTTP can receive messages |
+| **Cross-system** | Cosmos-native | Any AMQP or HTTP client |
 
-This project keeps **both** patterns so both are documented — they are complementary, not competing.
+Both patterns are kept in the project — they are complementary, not competing.
 
-### What Was Added
+### How It Fits Into the Pipeline
 
-After `StoreSummary` writes the batch summary to Cosmos, the orchestrator calls two new activities:
+After the monitor loop confirms a batch, the orchestrator calls two publishing activities:
 
-1. **`BatchCompletePublisher`** — sends a `BatchCompletedMessage` to the `lab-results-notifications` **queue** via `[ServiceBusOutput]` binding. Every completed batch goes here.
-2. **`AbnormalAlertPublisher`** — sends the same message to the `lab-results-alerts` **topic**, but only when `AbnormalCount > 0`. Two subscriptions on the topic filter this independently.
-
-A new **`ServiceBusLabResultNotifier`** function consumes the notifications queue with `[ServiceBusTrigger]` and emits an App Insights custom event. A **`ServiceBusDeadLetterMonitor`** timer function peeks the dead-letter sub-queue every 5 minutes and logs any messages found there.
-
-### Queues vs Topics vs Subscriptions
+- **`BatchCompletePublisher`** → `lab-results-notifications` queue via `[ServiceBusOutput]` — every completed batch, consumed by `ServiceBusLabResultNotifier`
+- **`AbnormalAlertPublisher`** → `lab-results-alerts` topic via `[ServiceBusOutput]` — only when `AbnormalCount > 0`
 
 ```
 Queue (lab-results-notifications)
@@ -1007,30 +806,30 @@ Queue (lab-results-notifications)
 Topic (lab-results-alerts)
   ├─ Subscription: clinical-alerts    (no filter — receives all messages)
   └─ Subscription: critical-alerts    (SQL filter: AbnormalCount > 5)
-     Used for: fan-out — one message delivered independently to each matching subscription
+     Used for: fan-out — each subscription gets its own independent delivery
 ```
 
-**AZ-204 exam rule:** Use a queue when one consumer should process each message. Use a topic when multiple independent consumers each need their own copy, optionally with content-based filtering.
+**AZ-204 exam rule:** Use a queue when exactly one consumer should process each message. Use a topic when multiple independent consumers each need their own copy, optionally filtered by content.
 
 ### Peek-Lock vs Receive-and-Delete
 
-`[ServiceBusTrigger]` uses **peek-lock** by default, which is the safer and more common mode:
+`[ServiceBusTrigger]` uses **peek-lock** by default:
 
 | | Peek-lock | Receive-and-delete |
 |---|---|---|
-| **How it works** | Message is locked (invisible) while processing; completed on success, released on failure | Message is deleted immediately on receipt — no retry possible |
-| **On function exception** | Lock expires → message reappears → redelivered | Message is gone — data loss on failure |
-| **MaxDeliveryCount** | After N failures, message moves to dead-letter queue | N/A — no redelivery |
-| **Best for** | Any processing where you cannot afford to lose a message | Low-value idempotent operations where duplicate processing is worse than loss |
+| **How it works** | Message locked while processing; completed on success, released on failure | Message deleted immediately on receipt |
+| **On exception** | Lock expires → message reappears → redelivered | Message gone — no retry possible |
+| **After N failures** | Moved to dead-letter queue | N/A |
+| **Best for** | Any processing where data loss is unacceptable | Idempotent operations where duplicate processing is worse than loss |
 
 ### Dead-Letter Queue
 
-Messages land in the dead-letter sub-queue (`{queue}/$DeadLetterQueue`) when:
-- Delivery count exceeds `MaxDeliveryCount` (default: 10) after repeated processing failures
-- Message TTL expires before it is consumed
-- A consumer explicitly dead-letters it via `DeadLetterMessageAsync`
+Messages land in the DLQ when:
+- Delivery count exceeds `MaxDeliveryCount` (default: 10)
+- Message TTL expires before consumption
+- A consumer explicitly calls `DeadLetterMessageAsync`
 
-`ServiceBusDeadLetterMonitor` peeks (not receives) so messages remain visible for human inspection. The `SubQueue.DeadLetter` receiver option targets the sub-queue directly:
+`ServiceBusDeadLetterMonitor` runs every 5 minutes, peeks (not receives) the DLQ via `SubQueue.DeadLetter`, and logs any messages found — leaving them in place for human inspection.
 
 ```csharp
 _serviceBusClient.CreateReceiver(
@@ -1040,89 +839,48 @@ _serviceBusClient.CreateReceiver(
 
 ### Message TTL and Duplicate Detection
 
-Two additional Service Bus features worth knowing for the exam:
+**Message TTL** — set `TimeToLive` on `ServiceBusMessage` or at the queue/topic level. Expired messages are dead-lettered (if configured) or silently discarded.
 
-**Message TTL** — set `TimeToLive` on `ServiceBusMessage` or at the queue/topic level. Expired messages are dead-lettered (if dead-lettering on expiration is enabled) or silently discarded.
+**Duplicate detection** — enable on the queue/topic, set a `MessageId` on each message. Service Bus discards messages with an ID seen within the detection window (default: 10 minutes).
 
-**Duplicate detection** — enable on the queue/topic and set a `MessageId` on each message. Service Bus discards any message with an ID it has seen within the duplicate detection window (default: 10 minutes). Useful for idempotent retry scenarios.
+### Portal Setup
 
-### Azure Portal Setup
+**Create Service Bus namespace** (`sb-healthdoc-dev`, **Standard** tier — Standard required for topics; Basic is queues only).
 
-#### Step 1 — Create the Service Bus Namespace
+**Create queue** `lab-results-notifications`: Max delivery count 10, TTL 14 days, dead-lettering on expiration enabled.
 
-Search **Service Bus** → **Create**.
+**Create topic** `lab-results-alerts` with two subscriptions:
 
-| Field | Value |
+| Subscription | Filter |
 |---|---|
-| Resource group | same as Function App |
-| Namespace name | `sb-healthdoc-dev` (globally unique) |
-| Region | same region |
-| Pricing tier | **Standard** (required for topics; Basic only supports queues) |
+| `clinical-alerts` | None — receives all messages |
+| `critical-alerts` | SQL: `AbnormalCount > 5` |
 
-#### Step 2 — Create the Notifications Queue
-
-Namespace → **Queues** → **Add**:
-
-| Field | Value |
-|---|---|
-| Name | `lab-results-notifications` |
-| Max delivery count | 10 |
-| Message TTL | 14 days (default) |
-| Dead-lettering on message expiration | enabled |
-
-#### Step 3 — Create the Alerts Topic and Subscriptions
-
-Namespace → **Topics** → **Add**:
-
-| Field | Value |
-|---|---|
-| Name | `lab-results-alerts` |
-
-Then open the topic → **Subscriptions** → **Add** twice:
-
-**Subscription 1:**
-
-| Field | Value |
-|---|---|
-| Name | `clinical-alerts` |
-| Filter type | None (receives all messages) |
-
-**Subscription 2:**
-
-| Field | Value |
-|---|---|
-| Name | `critical-alerts` |
-| Filter type | SQL filter |
-| Filter expression | `AbnormalCount > 5` |
-
-#### Step 4 — Copy the Connection String
-
-Namespace → **Shared access policies** → `RootManageSharedAccessKey` → copy the primary connection string. Add it to `local.settings.json` as `ServiceBusConnectionString`, and to the Function App configuration (or as a Key Vault secret referenced via `@Microsoft.KeyVault(...)`).
+Copy the connection string from **Shared access policies** → `RootManageSharedAccessKey`. Add to `local.settings.json` as `ServiceBusConnectionString` and to Function App configuration (or as a Key Vault secret).
 
 ---
 
 ## Azure Event Grid
 
-### Why Event Grid (and not just BlobTrigger or Service Bus)?
+### Push-Based Events vs Polling and Queuing
 
-The existing blob trigger already starts the pipeline when a CSV lands. Event Grid is a separate exam topic and a fundamentally different event delivery model:
+The blob trigger already starts the pipeline when a CSV lands. Event Grid is a distinct exam topic covering push-based event delivery to multiple independent subscribers:
 
 | | BlobTrigger | Event Grid | Service Bus |
 |---|---|---|---|
-| **Model** | Polling (Functions runtime polls storage) | Push (Azure pushes event to endpoint) | Message queue / topic |
-| **Fan-out** | All instances race for one message | Every subscriber gets its own delivery | Queue = one consumer; topic = multiple |
-| **Filtering** | None | Subject prefix/suffix, event type | SQL expressions on message properties |
-| **Cross-system** | Azure Functions only | Any HTTPS endpoint, webhook, or supported Azure service | Any AMQP or HTTP client |
-| **Latency** | ~seconds (poll interval) | Near real-time push | Near real-time |
-| **Best for** | Simple per-file processing triggers | Reactive architecture with multiple consumers or cross-service events | Durable queuing, retry, ordering guarantees |
+| **Model** | Polling | Push | Durable queue / topic |
+| **Fan-out** | All instances compete for one invocation | Every subscriber gets independent delivery | Queue = one; topic = multiple subscriptions |
+| **Filtering** | None | Subject prefix/suffix, event type, advanced field filters | SQL expressions |
+| **Scope** | Azure Functions | Any HTTPS endpoint or Azure service | Any AMQP or HTTP client |
+| **Best for** | Simple per-file processing | Reactive fan-out with multiple independent subscribers | Guaranteed delivery, retry, ordering |
 
-**AZ-204 exam rule:** Use Event Grid when you need push-based fan-out to multiple independent subscribers with filtering. Use Service Bus when you need guaranteed delivery, retry, dead-lettering, or ordered processing.
+**AZ-204 exam rule:** Use Event Grid for push-based fan-out with filtering. Use Service Bus for guaranteed delivery with retry and dead-lettering.
 
-### What Was Added
+### How It Fits Into the Pipeline
 
-**System event path** — `EventGridLabResultAuditor` receives `Microsoft.Storage.BlobCreated` events via an Event Grid subscription on the `lab-results-incoming` container. It writes a `LabAuditRecord` to the `AuditLog` Cosmos container. This runs alongside `LabResultIngestionTrigger` — both fire on the same blob upload, with neither subscriber knowing about the other.
+**System event path** — an Event Grid subscription on the `lab-results-incoming` container sends `Microsoft.Storage.BlobCreated` events to `EventGridLabResultAuditor`. It writes a `LabAuditRecord` to the `AuditLog` Cosmos container. This runs independently of `LabResultIngestionTrigger` — both fire on the same upload with neither knowing about the other.
 
-**Custom event path** — `AbnormalResultEventPublisher` (activity) publishes a `HealthDoc.Lab.AbnormalResultDetected` CloudEvent to a custom Event Grid topic whenever a batch contains abnormal results. Called by the orchestrator immediately after `StoreSummary`, before the monitor loop, so subscribers get early notification.
+**Custom event path** — the orchestrator calls `AbnormalResultEventPublisher` immediately after `StoreSummary` when abnormal results are present. The activity publishes a `HealthDoc.Lab.AbnormalResultDetected` CloudEvent to a custom topic via `EventGridPublisherClient`.
 
 ### System Events vs Custom Events
 
@@ -1130,310 +888,257 @@ The existing blob trigger already starts the pipeline when a CSV lands. Event Gr
 System events                          Custom events
 ─────────────────────────────          ──────────────────────────────────
 Published by Azure services            Published by your application code
-(Blob Storage, Cosmos DB, etc.)        (via EventGridPublisherClient)
+(Blob Storage, Cosmos DB, etc.)        via EventGridPublisherClient
 
-Source: Azure resource itself          Source: custom topic you create
+Source: the Azure resource itself      Source: a custom topic you create
 
 Schema: predefined by the service      Schema: you define the event type,
 (e.g. Microsoft.Storage.BlobCreated)   subject, and data payload
 
-Subscription: on the resource          Subscription: on the custom topic
-(Storage account → Event Grid blade)   (custom topic → Subscriptions blade)
+Subscription created on the resource   Subscription created on the topic
 ```
 
 Both use the same delivery, retry, and dead-lettering infrastructure.
 
 ### CloudEvents vs Event Grid Schema
 
-Event Grid supports two schemas. **CloudEvents** is the modern choice:
-
-| | CloudEvents (recommended) | Event Grid schema (legacy) |
+| | CloudEvents (recommended) | Event Grid schema |
 |---|---|---|
-| **Standard** | Open standard (CNCF) | Azure-specific |
-| **Portability** | Works with any CloudEvents-compatible system | Azure-only |
+| **Standard** | Open (CNCF) | Azure-specific |
+| **Portability** | Any CloudEvents-compatible system | Azure only |
 | **`type` field** | `HealthDoc.Lab.AbnormalResultDetected` | `eventType` |
-| **`source` field** | `/healthdoc/labs/orchestrator` | `topic` (set by Azure) |
 
-This project uses CloudEvents. The `[EventGridTrigger]` binding in the isolated worker model accepts both schemas automatically.
+This project uses CloudEvents throughout. `[EventGridTrigger]` accepts both schemas automatically.
 
 ### Subscription Filters
 
-Event Grid subscriptions support two filter types:
+**Subject filters** match on the event subject string:
+- `SubjectBeginsWith: /blobServices/default/containers/lab-results-incoming/` — limits the auditor to uploads only, not writes to processed or failed containers
 
-**Subject filters** — match on the event subject string:
-- `SubjectBeginsWith: /blobServices/default/containers/lab-results-incoming/` — only blobs in a specific container
-- `SubjectEndsWith: .csv` — only CSV files
-
-**Advanced filters** — match on event data fields:
+**Advanced filters** match on event data fields:
 ```json
 { "operatorType": "NumberGreaterThan", "key": "data.AbnormalCount", "value": 5 }
 ```
 
-The `EventGridLabResultAuditor` subscription uses a subject-begins-with filter so it only receives events from `lab-results-incoming`, not the processed or failed containers.
-
 ### Retry Policy and Dead-Lettering
 
-If the subscriber endpoint returns a non-2xx response (or times out), Event Grid retries with exponential backoff:
-- Default: up to 24 hours, up to 30 retries
-- Configurable: set `MaxDeliveryAttempts` and `EventTimeToLive` on the subscription
+If a subscriber returns non-2xx or times out, Event Grid retries with exponential backoff — up to 24 hours and 30 attempts by default. After exhausting retries, events can be dead-lettered to a blob container for inspection. Configure `MaxDeliveryAttempts` and `EventTimeToLive` per subscription.
 
-After all retry attempts are exhausted, the event can be **dead-lettered** to a blob container — enabling inspection of undelivered events. Enable dead-lettering on the subscription and point it at a storage container.
+### Portal Setup
 
-### Azure Portal Setup
+**Create custom Event Grid topic** (`evgt-healthdoc-abnormal-alerts`, Cloud Event Schema v1.0). Copy Key 1 as `EventGridTopicKey` and the endpoint URL as `EventGridTopicEndpoint`.
 
-#### Step 1 — Create the Custom Event Grid Topic
+In Azure: grant the Function App Managed Identity the **EventGrid Data Sender** RBAC role on the topic, then replace `AzureKeyCredential` with `DefaultAzureCredential` in `Program.cs`.
 
-Search **Event Grid Topics** → **Create**:
+**Create system event subscription** — Storage account → **Events** → **+ Event Subscription**:
 
 | Field | Value |
 |---|---|
-| Resource group | same as Function App |
-| Name | `evgt-healthdoc-abnormal-alerts` |
-| Region | same region |
-| Event schema | **Cloud Event Schema v1.0** |
-
-After creation: **Access keys** blade → copy Key 1. Add to `local.settings.json` as `EventGridTopicKey`, and the topic endpoint as `EventGridTopicEndpoint`.
-
-In Azure (deployed): grant the Function App Managed Identity the **EventGrid Data Sender** RBAC role on the topic, then swap `AzureKeyCredential` for `DefaultAzureCredential` in `Program.cs`.
-
-#### Step 2 — Create the System Event Subscription (Blob → Auditor)
-
-Storage account → **Events** → **+ Event Subscription**:
-
-| Field | Value |
-|---|---|
-| Name | `lab-incoming-audit` |
-| Event schema | Cloud Event Schema v1.0 |
 | Filter to event types | `Microsoft.Storage.BlobCreated` |
-| Endpoint type | Azure Function |
-| Endpoint | `EventGridLabResultAuditor` |
+| Endpoint type | Azure Function → `EventGridLabResultAuditor` |
+| Subject begins with | `/blobServices/default/containers/lab-results-incoming/` |
 
-Add a subject filter:
-- **Subject begins with:** `/blobServices/default/containers/lab-results-incoming/`
+**Create custom event subscription** — Custom topic → **+ Event Subscription**, endpoint: Web Hook. Use [webhook.site](https://webhook.site) in a study environment to inspect delivered events.
 
-This ensures only uploads to the incoming container trigger the auditor — not writes to processed or failed.
-
-#### Step 3 — Create the Custom Event Subscription (Topic → Subscriber)
-
-Custom topic → **+ Event Subscription**:
-
-| Field | Value |
-|---|---|
-| Name | `abnormal-alerts-webhook` |
-| Event schema | Cloud Event Schema v1.0 |
-| Endpoint type | Web Hook (or another Function) |
-| Endpoint | your webhook URL |
-
-For a study environment, use [webhook.site](https://webhook.site) as the endpoint to inspect delivered events without building a consumer.
-
-#### Step 4 — Add the AuditLog Cosmos Container
-
-In the Cosmos DB account → **Data Explorer** → your `LabResults` database → **New Container**:
-
-| Field | Value |
-|---|---|
-| Container id | `AuditLog` |
-| Partition key | `/ClinicId` |
+**Add `AuditLog` Cosmos container** — partition key `/ClinicId`.
 
 ---
 
 ## Azure Cache for Redis
 
-### Why Redis (and not just the APIM cache)?
+### Cache-Aside in the Application Layer
 
-The APIM `cache-lookup`/`cache-store` policies were added in the APIM setup but have no effect on the Consumption tier without an external cache configured. Redis gives real, working cache-aside behaviour directly in application code and is the dedicated AZ-204 caching topic.
+The APIM `cache-lookup`/`cache-store` policies are present but have no effect on the Consumption tier without an external cache linked. Redis provides real cache-aside behaviour directly in application code — and is the dedicated AZ-204 caching topic.
 
 | | APIM cache policy | Redis in application code |
 |---|---|---|
-| **Where it sits** | Gateway layer — before the Function is invoked | Application layer — inside the Function |
-| **What it caches** | Full HTTP responses | Any data (JSON, strings, binary) |
-| **Invalidation** | TTL only — no write-triggered invalidation | Your code calls `KeyDeleteAsync` on write |
-| **Visibility** | Invisible to the Function | Fully observable — log hits/misses, inspect keys |
+| **Where it sits** | Gateway — before the Function is invoked | Inside the Function |
+| **What it caches** | Full HTTP responses | Any data — JSON, strings, binary |
+| **Invalidation** | TTL only | Your code calls `KeyDeleteAsync` on write |
 | **Tier support** | Consumption: no-op without external cache | Works everywhere |
 
-In this project both are in place: the APIM policy stubs remain as documentation, and Redis provides the actual caching behaviour. On the Developer tier or above, linking Redis as an APIM External Cache would make both layers active simultaneously.
+Both layers are in place: the APIM policy stubs remain as documentation, and Redis provides the actual caching. Linking Redis as an APIM External Cache on the Developer tier or above would activate both simultaneously.
 
 ### Cache-Aside Pattern
 
-Cache-aside (also called lazy loading) is the primary pattern tested on AZ-204:
+Cache-aside (lazy loading) is the primary caching pattern on the AZ-204 exam:
 
 ```
 Read path                              Write path
 ──────────────────────────────         ──────────────────────────────
 1. Check Redis for cache key           1. Write new records to Cosmos DB
-2. Cache hit  → return cached data     2. Delete the cache key for that clinicId
-3. Cache miss → query Cosmos DB        3. Next read becomes a cache miss and
-4. Store result in Redis (60s TTL)        repopulates from fresh Cosmos data
-5. Return Cosmos result
+2. Hit  → return cached data           2. Delete the cache key for clinicId
+3. Miss → query Cosmos DB             3. Next read repopulates from Cosmos
+4. Store result in Redis (60s TTL)
+5. Return result
 ```
 
-**Why write-invalidate (delete) rather than write-through (update)?**
+**Write-invalidate (delete) rather than write-through (update):** the activity only needs the `clinicId` to delete the key — no need to serialise the full result set, which would duplicate work the read path already does. The cost is one extra Cosmos query on the next read after a write, acceptable for append-only lab data.
 
-Write-invalidate is simpler — the activity only needs to know the `clinicId`, not the full result set. A write-through would require the activity to serialise and store the new records in Redis, which duplicates the work `LabResultsEndpoint` already does. The cost is one extra Cosmos query on the next read after a write, which is acceptable for append-only lab data.
+### Key Implementation Details
 
-### What Changed
-
-**`LabResultsEndpoint.cs`** — injects `IConnectionMultiplexer`, implements cache-aside:
+**`LabResultsEndpoint.cs`** — checks Redis before every Cosmos query:
 
 ```csharp
 var cached = await db.StringGetAsync(cacheKey);
 if (cached.HasValue)
-{
-    // Cache hit — skip Cosmos entirely
-    return deserialize and respond;
-}
-// Cache miss — query Cosmos, then store
+    return deserialise and respond;   // Cosmos not touched
+
+// cache miss — query Cosmos, store result
 await db.StringSetAsync(cacheKey, JsonSerializer.Serialize(records), AppConfig.Redis.DefaultTtl);
 ```
 
-**`PatientResultUpdater.cs`** — injects `IConnectionMultiplexer`, invalidates on write:
+**`PatientResultUpdater.cs`** — invalidates on write:
 
 ```csharp
 await db.KeyDeleteAsync(AppConfig.Redis.ResultsCacheKey(clinicId));
 ```
 
-Method changed from synchronous to `async Task<ProcessedRecord[]>` to await the cache delete before returning the records array to the Cosmos output binding.
-
-**`Program.cs`** — singleton `IConnectionMultiplexer` registration:
-
-```csharp
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-    ConnectionMultiplexer.Connect(connectionString));
-```
-
-`IConnectionMultiplexer` **must be a singleton** — it manages a connection pool. Creating one per request would exhaust TCP connections within seconds under any load.
+**`Program.cs`** — `IConnectionMultiplexer` registered as a singleton. This is mandatory: the multiplexer manages a connection pool, and creating one per request would exhaust TCP connections immediately.
 
 ### Redis Data Types
 
-This project uses the **string** type (which holds any byte sequence, including JSON blobs). Other types worth knowing for the exam:
+This project uses the **string** type (any byte sequence, including JSON). Other types worth knowing:
 
 | Type | Use case |
 |---|---|
-| **String** | Simple key-value, JSON blobs, counters (`INCR`) |
-| **Hash** | Object with named fields — cache a user profile without serialising the whole object |
+| **String** | Key-value, JSON blobs, counters (`INCR`) |
+| **Hash** | Object with named fields — cache partial objects without full serialisation |
 | **List** | Ordered sequences, simple queues (`LPUSH`/`RPOP`) |
 | **Set** | Unique members, membership tests (`SADD`/`SISMEMBER`) |
 | **Sorted set** | Ranked leaderboards, time-series by score |
 
 ### TTL and Eviction
 
-**TTL** — set per key at write time (`StringSetAsync(key, value, TimeSpan)`). After expiry the key is deleted automatically. In this project: 60 seconds. A GET within that window is a cache hit; a GET after expiry is a miss and triggers a fresh Cosmos query.
+**TTL** is set per key at write time. After expiry the key is deleted automatically — 60 seconds in this project. A GET within the window is a cache hit; after expiry it's a miss and triggers a fresh Cosmos query.
 
-**Eviction policy** — when the cache reaches its memory limit, Redis evicts keys according to the configured policy:
+**Eviction policy** kicks in when the cache reaches its memory limit:
 
 | Policy | Behaviour |
 |---|---|
-| `noeviction` | Returns errors on write when full — safe, but callers must handle it |
-| `allkeys-lru` | Evicts the least-recently-used key across all keys |
-| `volatile-lru` | Evicts LRU keys that have a TTL set (leaves TTL-less keys alone) |
-| `allkeys-lfu` | Evicts the least-frequently-used key |
+| `noeviction` | Returns errors on write when full |
+| `allkeys-lru` | Evicts least-recently-used across all keys |
+| `volatile-lru` | Evicts LRU keys that have a TTL (leaves TTL-less keys) |
+| `allkeys-lfu` | Evicts least-frequently-used |
 
-Azure Cache for Redis defaults to `volatile-lru`. Since every key in this project has a TTL, `volatile-lru` and `allkeys-lru` behave identically.
+Azure Cache for Redis defaults to `volatile-lru`. Since every key in this project has a TTL, `volatile-lru` and `allkeys-lru` behave identically here.
 
-### Azure Portal Setup
+### Portal Setup
 
-#### Step 1 — Create Azure Cache for Redis
+**Create Azure Cache for Redis** (`redis-healthdoc-dev`, **Basic C0** — 250 MB, cheapest, no SLA, ideal for study).
 
-Search **Azure Cache for Redis** → **Create**:
+**SKU comparison:**
 
-| Field | Value |
-|---|---|
-| Resource group | same as Function App |
-| DNS name | `redis-healthdoc-dev` (globally unique, becomes `redis-healthdoc-dev.redis.cache.windows.net`) |
-| Cache SKU | **Basic C0** (250 MB, no SLA — cheapest option, ideal for study) |
-| Region | same region |
+| Tier | Replication | Clustering | Persistence | Best for |
+|---|---|---|---|---|
+| Basic | No | No | No | Dev/test |
+| Standard | Yes | No | No | Production |
+| Premium | Yes | Yes (up to 10 shards) | RDB + AOF | High-throughput production |
+| Enterprise | Yes | Yes | Yes + active geo-replication | Global, mission-critical |
 
-> **SKU comparison for the exam:**
->
-> | Tier | Replication | Clustering | Persistence | Best for |
-> |---|---|---|---|---|
-> | Basic | No | No | No | Dev/test |
-> | Standard | Yes (primary + replica) | No | No | Production without clustering |
-> | Premium | Yes | Yes (up to 10 shards) | RDB + AOF | High-throughput production |
-> | Enterprise | Yes | Yes | Yes + active geo-replication | Global, mission-critical |
-
-#### Step 2 — Copy the Connection String
-
-Redis instance → **Access keys** → copy the **Primary connection string** (StackExchange.Redis format). Add to `local.settings.json`:
+Copy the **Primary connection string** from **Access keys**. Add to `local.settings.json`:
 
 ```json
 "RedisConnectionString": "<name>.redis.cache.windows.net:6380,password=<key>,ssl=True,abortConnect=False"
 ```
 
-Add to the Function App configuration (or store in Key Vault and reference via `@Microsoft.KeyVault(...)`).
-
-#### Step 3 — Local Development with Docker
-
-To avoid Azure costs during local development, run Redis in Docker:
-
+For local development with Docker:
 ```bash
 docker run -d -p 6379:6379 redis
 ```
-
-Then set `local.settings.json`:
-
 ```json
 "RedisConnectionString": "localhost:6379"
 ```
 
-The StackExchange.Redis connection string format is identical for local and Azure — only the host and credentials differ.
-
-#### Step 4 — Optional: Link to APIM as External Cache
-
-To make the existing APIM `cache-lookup`/`cache-store` policies functional on Consumption tier:
-
-APIM → **External cache** → **Add** → select the Redis instance → **Save**.
-
-Once linked, APIM caches HTTP responses at the gateway and Redis stores them. The application-layer Redis cache and the APIM gateway cache operate independently — a request that hits the APIM cache never reaches the Function; a request that misses APIM but hits the application cache skips the Cosmos query.
+**Optional: link to APIM as External Cache** — APIM → **External cache** → **Add** → select the Redis instance. Once linked, the existing `cache-lookup`/`cache-store` policy stubs become active on Consumption tier. The two cache layers operate independently: an APIM cache hit never reaches the Function; an APIM miss that hits the application cache skips the Cosmos query.
 
 ---
 
 ## AZ-204 Concepts Checklist
 
+### Compute — Azure Functions
+
 - [ ] **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
+- [ ] **HTTP trigger** — `UploadLabResultsEndpoint.cs`, `BatchStatusEndpoint.cs`, `LabResultsEndpoint.cs`, `FailedLabFilesEndpoint.cs`
 - [ ] **Blob trigger** — `LabResultIngestionTrigger.cs` (`BlobTrigger` on `lab-results-incoming/{name}`)
-- [ ] **Durable orchestration** — `LabResultOrchestrator.cs` (`[OrchestrationTrigger]`, deterministic replay rules)
-- [ ] **Activity functions** — 8 activities, each decorated with `[Function]` + `[ActivityTrigger]`
-- [ ] **Function chaining** — sequential `ValidateFile → ParseFile → StoreSummary`
+- [ ] **CosmosDB trigger** — `DownstreamSystemNotifier.cs` (fires on new documents in `ProcessingSummaries`)
+- [ ] **Timer trigger** — `ServiceBusDeadLetterMonitor.cs` (every 5 minutes)
+- [ ] **EventGrid trigger** — `EventGridLabResultAuditor.cs` (receives `BlobCreated` system events)
+- [ ] **ServiceBus trigger** — `ServiceBusLabResultNotifier.cs` (consumes `lab-results-notifications` queue)
+- [ ] **Activity functions** — 11 activities, each decorated with `[Function]` + `[ActivityTrigger]`
+- [ ] **Durable orchestrator** — `LabResultOrchestrator.cs` (`[OrchestrationTrigger]`, deterministic replay)
+- [ ] **Function chaining** — sequential `ValidateFile → ParseFile → StoreSummary` with early exit
 - [ ] **Fan-out / Fan-in** — parallel `ProcessRecord` × N, `Task.WhenAll` fan-in
-- [ ] **Monitor pattern** — polling loop with `context.CreateTimer()` (durable, replay-safe)
-- [ ] **Async HTTP API pattern** — `BatchStatusEndpoint.cs`, `[DurableClient]` binding, `202 Accepted` polling response
-- [ ] **Cosmos DB output binding** — `SummaryUpdater.cs` + `TimeoutSummaryWriter.cs` (`[CosmosDBOutput]` attribute)
-- [ ] **Cosmos DB SDK** — direct `CosmosClient` query in `StorageConfirmationValidator.cs`
-- [ ] **Cosmos DB trigger** — `DownstreamSystemNotifier.cs` (`[CosmosDBTrigger]` fires on new documents in `ProcessingSummaries`)
-- [ ] **Dependency injection** — singleton `CosmosClient` and `BlobServiceClient` registered in `Program.cs`
-- [ ] **Application Insights** — sampling config in `host.json`; `TelemetryClient` for custom business events in `FileValidator.cs` and `DownstreamSystemNotifier.cs`
-- [ ] **Centralized configuration** — `AppConfig.cs` (`const` strings required for C# attribute parameters at compile time; `Metrics` nested class centralizes metric names and dimension keys)
-- [ ] **Structured logging** — `ILogger<T>` injected throughout all activities and orchestrator; 8+ log points across the pipeline
-- [ ] **HTTP trigger (upload)** — `UploadLabResultsEndpoint.cs`; accepts CSV body, generates filename, writes to Blob Storage via `BlobServiceClient`, returns `instanceId`
-- [ ] **API Management** — Consumption SKU; named values, product, subscription, three operations
-- [ ] **APIM policies** — API-level: `set-header` (key injection, clinic-id tagging), outbound header cleanup; operation-level: `rate-limit-by-key`, `choose`/`return-response` size guard, `cache-lookup`/`cache-store`
-- [ ] **MSAL authentication** — `HealthDoc.Dashboard` SPA uses `@azure/msal-react`; authorization code + PKCE flow, silent token renewal, popup fallback
-- [ ] **JWT validation policy** — APIM `validate-jwt` on Internal Dashboard product verifies Azure AD tokens against OIDC discovery endpoint
-- [ ] **SAS token generation** — `FailedLabFilesEndpoint.cs` generates time-limited read-only SAS URIs for blob downloads via `BlobClient.GenerateSasUri`
-- [ ] **Azure AD app registration** — two registrations: API app exposes `LabResults.Read` scope; SPA app consumes it
-- [ ] **Azure Key Vault** — secrets stored in Key Vault; app settings reference them via `@Microsoft.KeyVault(...)`; runtime resolves transparently
-- [ ] **Managed Identity** — system-assigned identity on Function App; `DefaultAzureCredential` resolves to Managed Identity in Azure and `az login` locally
-- [ ] **Passwordless SDK clients** — `CosmosClient(endpoint, credential)` and `BlobServiceClient(uri, credential)` in `Program.cs`; no connection strings in SDK layer
-- [ ] **RBAC role assignments** — `Key Vault Secrets User`, `Cosmos DB Built-in Data Contributor`, `Storage Blob Data Contributor` granted to the Function App identity
-- [ ] **DefaultAzureCredential chain** — ordered credential resolution: environment → workload identity → managed identity → VS → CLI → PowerShell → browser
-- [ ] **System-assigned vs user-assigned identity** — system-assigned lifecycle tied to the resource; user-assigned independent and shareable
-- [ ] **Service Bus queue** — `BatchCompletePublisher.cs` uses `[ServiceBusOutput]`; `ServiceBusLabResultNotifier.cs` uses `[ServiceBusTrigger]` with peek-lock
-- [ ] **Service Bus topic + subscriptions** — `AbnormalAlertPublisher.cs` publishes to `lab-results-alerts` topic; two subscriptions (all alerts / SQL filter `AbnormalCount > 5`)
-- [ ] **Dead-letter queue** — `ServiceBusDeadLetterMonitor.cs` peeks DLQ via `SubQueue.DeadLetter` receiver option on a timer trigger
-- [ ] **Queues vs topics** — queue = competing consumers, one delivery; topic = fan-out, each subscription gets its own copy
-- [ ] **Peek-lock vs receive-and-delete** — peek-lock (default) re-delivers on failure; receive-and-delete removes immediately with no retry
-- [ ] **Message TTL and duplicate detection** — configurable at queue/topic level; duplicate detection deduplicates by MessageId within a time window
-- [ ] **Event Grid system events** — `EventGridLabResultAuditor.cs` (`[EventGridTrigger]`); subscription on blob container fires `Microsoft.Storage.BlobCreated`; writes `LabAuditRecord` to `AuditLog` Cosmos container
-- [ ] **Event Grid custom events** — `AbnormalResultEventPublisher.cs` publishes `HealthDoc.Lab.AbnormalResultDetected` CloudEvent via `EventGridPublisherClient`; registered as singleton in `Program.cs`
-- [ ] **CloudEvents vs Event Grid schema** — project uses CloudEvents (open standard); `[EventGridTrigger]` accepts both schemas automatically
-- [ ] **Event Grid subscription filters** — subject-begins-with filter on system event subscription limits delivery to `lab-results-incoming` container only
-- [ ] **Event Grid vs Service Bus vs BlobTrigger** — push fan-out vs durable queuing vs polling; know the decision matrix for the exam
-- [ ] **EventGrid Data Sender role** — RBAC role required for Managed Identity to publish custom events; `AzureKeyCredential` used locally, swap for `DefaultAzureCredential` in Azure
-- [ ] **Azure Cache for Redis** — `LabResultsEndpoint.cs` implements cache-aside: Redis check → Cosmos fallback → cache store (60s TTL)
-- [ ] **Cache invalidation on write** — `PatientResultUpdater.cs` calls `KeyDeleteAsync` after storing records so the next read fetches fresh data
-- [ ] **IConnectionMultiplexer singleton** — `Program.cs`; connection pool reuse is mandatory; one instance per application lifetime
-- [ ] **Cache-aside pattern** — read: check cache → miss → query source → populate cache; write: update source → invalidate cache key
-- [ ] **Redis data types** — project uses string (JSON blob); hash/list/set/sorted set covered in README for exam awareness
-- [ ] **TTL and eviction policies** — 60s TTL per key; `volatile-lru` default eviction; Basic/Standard/Premium/Enterprise SKU tradeoffs
-- [ ] **APIM external cache** — Consumption tier cache policies are no-ops without external Redis linked; portal setup documented in README
+- [ ] **Monitor pattern** — `context.CreateTimer()` polling loop (durable, replay-safe)
+- [ ] **Async HTTP API** — `BatchStatusEndpoint.cs`, `[DurableClient]`, `202 Accepted` polling response
+- [ ] **CosmosDB output binding** — `SummaryUpdater.cs`, `TimeoutSummaryWriter.cs`, `StorageConfirmationValidator.cs`, `PatientResultUpdater.cs`
+- [ ] **ServiceBus output binding** — `BatchCompletePublisher.cs` (queue), `AbnormalAlertPublisher.cs` (topic)
+- [ ] **CosmosDB output binding on EventGrid trigger** — `EventGridLabResultAuditor.cs` writes `LabAuditRecord`
+- [ ] **Dependency injection** — all SDK clients registered as singletons in `Program.cs`
+- [ ] **Centralized configuration** — `AppConfig.cs` (`const` strings for C# attribute parameters; nested classes per service)
+- [ ] **Structured logging** — `ILogger<T>` throughout; cache hit/miss, DLQ findings, pipeline milestones
+- [ ] **Application Insights** — sampling in `host.json`; `TelemetryClient` custom events and metrics; pipeline duration metric with dimensions
+
+### Storage
+
+- [ ] **Blob containers** — `lab-results-incoming`, `lab-results-processed`, `lab-results-failed`
+- [ ] **Server-side blob copy** — `MoveProcessedFile.cs` (`StartCopyFromUriAsync` + delete source)
+- [ ] **SAS token generation** — `FailedLabFilesEndpoint.cs` (`BlobClient.GenerateSasUri`, 1-hour read-only)
+- [ ] **Cosmos DB partition key design** — `LabResultRecords` uses `/ClinicId` (single-partition queries by clinic); `ProcessingSummaries` uses `/id`
+- [ ] **Cosmos DB SDK query** — `StorageConfirmationValidator.cs` (`ReadItemAsync`, `CosmosException` not-found handling)
+- [ ] **Cosmos DB output binding** — declarative writes via `[CosmosDBOutput]` attribute; no SDK call needed
+
+### Security
+
+- [ ] **Azure AD app registration** — `HealthDoc-API` exposes `LabResults.Read` scope; `HealthDoc-Dashboard` consumes it
+- [ ] **MSAL — authorization code + PKCE** — `HealthDoc.Dashboard` (`@azure/msal-react`, silent acquisition, popup fallback)
+- [ ] **APIM validate-jwt** — product-level policy on Internal Dashboard; `openid-config` from Azure AD OIDC endpoint
+- [ ] **APIM policy execution order** — Product → API → Operation stacking; why validate-jwt lives at product level
+- [ ] **Subscription keys vs JWT** — system identity vs person identity; when to use each
+- [ ] **SAS tokens** — time-limited, scope-limited blob access without sharing account keys
+- [ ] **Azure Key Vault secrets** — `CosmosDBConnectionString` and `StorageConnectionString` stored as secrets
+- [ ] **Key Vault references in App Settings** — `@Microsoft.KeyVault(VaultName=...;SecretName=...)` resolved transparently by the runtime
+- [ ] **Key Vault soft-delete and purge protection** — accidental deletion safeguards
+- [ ] **RBAC vs access policies** — RBAC is the modern approach; access policies are vault-level and legacy
+- [ ] **System-assigned Managed Identity** — enabled on Function App; tied to the resource lifecycle
+- [ ] **System-assigned vs user-assigned** — system-assigned per-resource; user-assigned independent and shareable
+- [ ] **DefaultAzureCredential** — `az login` locally → Managed Identity in Azure; no code change between environments
+- [ ] **Passwordless SDK clients** — `CosmosClient(endpoint, credential)`, `BlobServiceClient(uri, credential)`
+- [ ] **RBAC role assignments** — `Key Vault Secrets User`, `Cosmos DB Built-in Data Contributor`, `Storage Blob Data Contributor`, `EventGrid Data Sender`
+
+### Monitor & Optimize
+
+- [ ] **Application Insights sampling** — `host.json` sampling config; `excludedTypes: Request` keeps request telemetry unsampled
+- [ ] **Custom events** — `TelemetryClient.TrackEvent` in `DownstreamSystemNotifier.cs` and `ServiceBusLabResultNotifier.cs`
+- [ ] **Custom metrics** — `TelemetryClient.TrackMetric` for pipeline duration with `FileName`, `BatchId`, `Status` dimensions
+- [ ] **Cache-aside pattern** — `LabResultsEndpoint.cs`: Redis check → Cosmos fallback → cache store; `PatientResultUpdater.cs`: write-invalidate
+- [ ] **IConnectionMultiplexer singleton** — connection pool reuse; one instance per application lifetime
+- [ ] **Redis TTL** — 60s per key via `StringSetAsync(key, value, TimeSpan)`
+- [ ] **Redis eviction policies** — `volatile-lru` default; `allkeys-lru`, `allkeys-lfu`, `noeviction` variants
+- [ ] **Redis SKU tiers** — Basic (dev), Standard (replication), Premium (clustering + persistence), Enterprise (geo-replication)
+- [ ] **APIM external cache** — links Redis to APIM so `cache-lookup`/`cache-store` policies work on Consumption tier
+
+### API Management
+
+- [ ] **Consumption SKU** — pay-per-call; cold starts; no built-in cache; no VNet
+- [ ] **APIM SKU comparison** — Consumption / Developer / Basic / Standard / Premium tiers
+- [ ] **Named values** — encrypted key-value store; referenced as `{{Name}}` in policy XML
+- [ ] **Products and subscriptions** — Clinic Standard (subscription required) and Internal Dashboard (JWT, no key)
+- [ ] **API-level policies** — `set-header` for key injection and clinic-id tagging; outbound header cleanup
+- [ ] **Operation-level policies** — `rate-limit-by-key` (Developer+ tier), `choose`/`return-response` Content-Type guard, `cache-lookup`/`cache-store`
+- [ ] **Public vs internal URL decoupling** — `/labs` public prefix maps to `/api` Functions prefix via Web service URL
+
+### Messaging & Events
+
+- [ ] **Service Bus queue** — `BatchCompletePublisher.cs` (`[ServiceBusOutput]`); `ServiceBusLabResultNotifier.cs` (`[ServiceBusTrigger]`, peek-lock)
+- [ ] **Service Bus topic + SQL subscriptions** — `AbnormalAlertPublisher.cs` → `lab-results-alerts`; `clinical-alerts` (all) and `critical-alerts` (`AbnormalCount > 5`)
+- [ ] **Dead-letter queue** — `ServiceBusDeadLetterMonitor.cs` peeks via `SubQueue.DeadLetter` option
+- [ ] **Peek-lock vs receive-and-delete** — peek-lock re-delivers on failure; receive-and-delete deletes immediately
+- [ ] **Message TTL and duplicate detection** — queue/topic-level config; `MessageId`-based dedup window
+- [ ] **Queues vs topics** — queue = one consumer per message; topic = each subscription gets independent delivery
+- [ ] **Event Grid system events** — `EventGridLabResultAuditor.cs` (`[EventGridTrigger]`); `Microsoft.Storage.BlobCreated` subscription on blob container
+- [ ] **Event Grid custom events** — `AbnormalResultEventPublisher.cs` publishes via `EventGridPublisherClient`; `EventGridPublisherClient` registered as singleton
+- [ ] **CloudEvents vs Event Grid schema** — CloudEvents is the open standard; `[EventGridTrigger]` accepts both
+- [ ] **Subscription filters** — subject-begins-with limits auditor to `lab-results-incoming` only; advanced filters for field-level matching
+- [ ] **Event Grid retry and dead-lettering** — exponential backoff up to 30 attempts / 24 hours; undelivered events to blob storage
+- [ ] **Event Grid vs Service Bus vs BlobTrigger** — push fan-out vs durable queuing vs polling
