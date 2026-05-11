@@ -803,10 +803,10 @@ The `--principal-id` is the Object (principal) ID shown in the Function App → 
 
 Also add the endpoint settings. These are not connection strings — they are the service URLs used by the SDK clients (`CosmosClient` and `BlobServiceClient`) in `Program.cs`, which authenticate with `DefaultAzureCredential` and connect directly to the service endpoint. The binding attributes use the Key Vault-referenced connection strings above; the SDK clients use these endpoint URLs. Both are required.
 
-| Name | Value |
-|---|---|
-| `CosmosDBEndpoint` | `https://<account>.documents.azure.com:443/` |
-| `StorageAccountEndpoint` | `https://<account>.blob.core.windows.net/` |
+| Name | Value | Where to find it |
+|---|---|---|
+| `CosmosDBEndpoint` | `https://<account>.documents.azure.com:443/` | Cosmos DB account → **Overview** → URI |
+| `StorageAccountEndpoint` | `https://<account>.blob.core.windows.net/` | Storage account → **Endpoints** → Blob service |
 
 ---
 
