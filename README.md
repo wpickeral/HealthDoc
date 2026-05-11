@@ -952,7 +952,7 @@ If a subscriber returns non-2xx or times out, Event Grid retries with exponentia
 
 Once created, go to the topic → **Access keys** → copy **Key 1** as `EventGridTopicKey` in `local.settings.json`. Copy the **Topic Endpoint** URL as `EventGridTopicEndpoint`.
 
-To verify events are being delivered, add a test subscription on the topic: **+ Event Subscription** → endpoint type **Web Hook** → use [webhook.site](https://webhook.site) to inspect the raw CloudEvent payload.
+To verify events are being delivered, add a test subscription on the topic: **+ Event Subscription** → endpoint type **Web Hook**. For the endpoint URL, use [webhook.site](https://webhook.site) — the site generates a unique HTTPS URL the moment you open it. Paste that URL as the webhook endpoint. When `AbnormalResultEventPublisher` fires, Event Grid delivers the CloudEvent as an HTTP POST to that URL and webhook.site displays the full request in real time — headers, body, and the exact JSON payload — in the browser. No account or setup required.
 
 **Create system event subscription** — Storage account → **Events** → **+ Event Subscription**:
 
