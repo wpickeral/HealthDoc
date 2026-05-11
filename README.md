@@ -958,9 +958,11 @@ To verify events are being delivered, add a test subscription on the topic: **+ 
 
 | Field | Value |
 |---|---|
-| Filter to event types | `Microsoft.Storage.BlobCreated` |
-| Endpoint type | Azure Function → `EventGridLabResultAuditor` |
-| Subject begins with | `/blobServices/default/containers/lab-results-incoming/` |
+| **Name** | `sub-healthdoc-blob-created-audit` |
+| **Event schema** | Cloud Event Schema v1.0 |
+| **Filter to event types** | `Microsoft.Storage.BlobCreated` |
+| **Endpoint type** | Azure Function → `EventGridLabResultAuditor` |
+| **Subject begins with** | `/blobServices/default/containers/lab-results-incoming/` |
 
 ---
 
