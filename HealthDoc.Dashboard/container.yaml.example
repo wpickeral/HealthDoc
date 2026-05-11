@@ -1,0 +1,35 @@
+apiVersion: '2021-09-01'
+location: <region>
+name: aci-healthdoc-dashboard
+properties:
+  containers:
+  - name: healthdoc-dashboard
+    properties:
+      image: <acr-name>.azurecr.io/healthdoc-dashboard:latest
+      ports:
+      - port: 80
+      resources:
+        requests:
+          cpu: 1
+          memoryInGb: 1
+      environmentVariables:
+      - name: TENANT_ID
+        secureValue: <tenant-id>
+      - name: SPA_CLIENT_ID
+        secureValue: <spa-client-id>
+      - name: API_CLIENT_ID
+        secureValue: <api-client-id>
+      - name: APIM_BASE_URL
+        secureValue: <apim-base-url>
+  restartPolicy: Always
+  ipAddress:
+    type: Public
+    ports:
+    - protocol: TCP
+      port: 80
+    dnsNameLabel: <dns-label>
+  osType: Linux
+  imageRegistryCredentials:
+  - server: <acr-name>.azurecr.io
+    username: <acr-username>
+    password: <acr-admin-password>
