@@ -1,0 +1,23 @@
+apiVersion: '2021-09-01'
+location: <region>
+name: aci-healthdoc-report-generator
+properties:
+  containers:
+  - name: report-generator
+    properties:
+      image: <acr-name>.azurecr.io/healthdoc-report-generator:latest
+      resources:
+        requests:
+          cpu: 1
+          memoryInGb: 1
+      environmentVariables:
+      - name: COSMOS_ENDPOINT
+        secureValue: <cosmos-endpoint>
+      - name: STORAGE_ENDPOINT
+        secureValue: <storage-endpoint>
+  restartPolicy: Never
+  osType: Linux
+  imageRegistryCredentials:
+  - server: <acr-name>.azurecr.io
+    username: <acr-username>
+    password: <acr-admin-password>

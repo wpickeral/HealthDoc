@@ -12,8 +12,6 @@ dist
 dist-ssr
 *.local
 .env
-public/config.js
-container.yaml
 
 # Editor directories and files
 .vscode/*
