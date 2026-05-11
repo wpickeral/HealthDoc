@@ -1,5 +1,4 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using Azure.Identity;
 using Azure.Storage.Blobs;
 using HealthDoc;
 using Microsoft.Azure.Cosmos;
@@ -16,18 +15,24 @@ builder.Services
     .AddApplicationInsightsTelemetryWorkerService()
     .ConfigureFunctionsApplicationInsights();
 
-// CosmosClient is thread safe — register as singleton
+// DefaultAzureCredential resolves: az login locally → Managed Identity in Azure.
+// No connection string or secret is read here — passwordless authentication throughout.
+var credential = new DefaultAzureCredential();
+
+// CosmosClient — thread safe, registered as singleton, authenticated via Managed Identity
 builder.Services.AddSingleton(sp =>
 {
-    var connectionString = Environment.GetEnvironmentVariable(AppConfig.CosmosDb.Connection);
-    return new CosmosClient(connectionString);
+    var endpoint = Environment.GetEnvironmentVariable(AppConfig.CosmosDb.Endpoint)
+        ?? throw new InvalidOperationException($"{AppConfig.CosmosDb.Endpoint} is not configured");
+    return new CosmosClient(endpoint, credential);
 });
 
-// BlobServiceClient is thread safe — register as singleton
+// BlobServiceClient — thread safe, registered as singleton, authenticated via Managed Identity
 builder.Services.AddSingleton(sp =>
 {
-    var connectionString = Environment.GetEnvironmentVariable(AppConfig.Blob.Connection);
-    return new BlobServiceClient(connectionString);
+    var endpoint = Environment.GetEnvironmentVariable(AppConfig.Blob.Endpoint)
+        ?? throw new InvalidOperationException($"{AppConfig.Blob.Endpoint} is not configured");
+    return new BlobServiceClient(new Uri(endpoint), credential);
 });
 
 builder.Build().Run();

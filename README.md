@@ -829,6 +829,148 @@ Then navigate to `http://localhost:5173`. Click **Sign In**, complete Azure AD a
 
 ---
 
+## Azure Key Vault & Managed Identity
+
+### Why Plaintext Secrets Are the Problem
+
+The original `local.settings.json` stored connection strings containing real account keys. Any developer who clones the repo, any CI log that prints environment variables, any accidental git commit of the file — all of these expose credentials that give full access to the storage account and Cosmos DB database. Key Vault and Managed Identity solve this at both layers:
+
+| Layer | Problem | Solution |
+|---|---|---|
+| **At rest** | Connection strings stored in config files, app settings, or environment variables | Secrets stored in Key Vault; app settings hold a reference, not the value |
+| **In transit** | App authenticates to Azure services using a shared key anyone can copy | App authenticates using its Azure identity — no secret to steal or rotate |
+
+### What Changed in This Project
+
+**`Program.cs`** — `CosmosClient` and `BlobServiceClient` now authenticate with `DefaultAzureCredential` and a service endpoint URI instead of a connection string:
+
+```csharp
+var credential = new DefaultAzureCredential();
+
+// CosmosClient — no key, no connection string
+new CosmosClient(endpoint, credential);
+
+// BlobServiceClient — no key, no connection string
+new BlobServiceClient(new Uri(endpoint), credential);
+```
+
+**Binding attributes** (`[CosmosDBTrigger]`, `[CosmosDBOutput]`, `[BlobTrigger]`) still reference a named connection string because the Functions runtime resolves these — not the SDK. In Azure, those app settings are Key Vault references that the runtime transparently resolves before passing to the binding provider. Locally, they remain plaintext in `local.settings.json` which is never committed.
+
+**`local.settings.json` additions:**
+
+```json
+"CosmosDBEndpoint": "https://<account>.documents.azure.com:443/",
+"StorageAccountEndpoint": "https://<account>.blob.core.windows.net/",
+"KeyVaultEndpoint": "https://kv-healthdoc-dev.vault.azure.net/"
+```
+
+### DefaultAzureCredential Chain
+
+`DefaultAzureCredential` tries these credential sources in order and uses the first that succeeds:
+
+| Order | Credential type | When it applies |
+|---|---|---|
+| 1 | Environment credential | `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` set |
+| 2 | Workload Identity | Azure Kubernetes Service with federated credentials |
+| 3 | Managed Identity | Running inside Azure (App Service, Functions, VM, ACI) |
+| 4 | Visual Studio credential | Signed in to Visual Studio |
+| 5 | Azure CLI credential | `az login` has been run locally |
+| 6 | Azure PowerShell credential | `Connect-AzAccount` has been run locally |
+| 7 | Interactive browser | Falls back to browser login if nothing else works |
+
+In this project: locally → credential #5 (`az login`). In Azure → credential #3 (Managed Identity). No code change needed between environments.
+
+### Azure Portal Setup — Step by Step
+
+#### Step 1 — Create the Key Vault
+
+Search **Key Vault** → **Create**.
+
+| Field | Value |
+|---|---|
+| Resource group | same as Function App |
+| Name | `kv-healthdoc-dev` (globally unique) |
+| Region | same region as all other resources |
+| Pricing tier | Standard |
+| Soft-delete | enabled (default) — protects against accidental deletion |
+| Purge protection | enabled — prevents hard-delete during retention period |
+
+#### Step 2 — Store Secrets
+
+Key Vault → **Secrets** → **Generate/Import** for each:
+
+| Secret name | Value |
+|---|---|
+| `CosmosDBConnectionString` | Full Cosmos DB connection string (from Cosmos DB → Keys) |
+| `StorageConnectionString` | Full storage account connection string (from Storage → Access keys) |
+
+#### Step 3 — Enable System-Assigned Managed Identity
+
+Function App → **Identity** → **System assigned** → **Status: On** → Save.
+
+Azure creates a service principal in Azure AD with the same name as the Function App. This identity is the "who" for all RBAC role assignments below.
+
+**System-assigned vs user-assigned (exam concept):**
+
+| | System-assigned | User-assigned |
+|---|---|---|
+| Lifecycle | Tied to the resource — deleted with the Function App | Independent — persists if the resource is deleted |
+| Sharing | One identity per resource | One identity can be assigned to many resources |
+| Best for | Single-resource use, simple setup | Shared identity across resources, pre-provisioned credentials |
+
+This project uses system-assigned because the identity is only needed by this one Function App.
+
+#### Step 4 — Grant Key Vault Access
+
+Key Vault → **Access control (IAM)** → **Add role assignment**:
+
+| Field | Value |
+|---|---|
+| Role | `Key Vault Secrets User` |
+| Assign access to | Managed Identity |
+| Members | Select your Function App |
+
+> **RBAC vs Access Policies:** Key Vault supports two permission models. The older model is **access policies** (vault-level; grant/deny per principal per secret). The newer model is **Azure RBAC** (consistent with all other Azure resources; use role assignments). RBAC is the recommended approach and what this project uses. Both appear on the AZ-204 exam — know the difference.
+
+#### Step 5 — Grant Cosmos DB Access
+
+Cosmos DB account → **Access control (IAM)** → **Add role assignment**:
+
+| Role | Assignee |
+|---|---|
+| `Cosmos DB Built-in Data Contributor` | Function App Managed Identity |
+
+This role allows read and write to data plane (documents). It does NOT allow management plane operations (creating databases, changing throughput, etc.) — principle of least privilege.
+
+#### Step 6 — Grant Blob Storage Access
+
+Storage account → **Access control (IAM)** → **Add role assignment**:
+
+| Role | Assignee |
+|---|---|
+| `Storage Blob Data Contributor` | Function App Managed Identity |
+
+#### Step 7 — Replace App Settings with Key Vault References
+
+Function App → **Configuration** → **Application settings**.
+
+For each connection string setting, replace the raw value with a Key Vault reference in this format:
+
+```
+@Microsoft.KeyVault(VaultName=kv-healthdoc-dev;SecretName=CosmosDBConnectionString)
+```
+
+The Functions runtime resolves the reference at startup. The app code reads `Environment.GetEnvironmentVariable("CosmosDBConnectionString")` and receives the secret value — no SDK change needed for the binding layer.
+
+Also add the two new endpoint settings:
+
+| Name | Value |
+|---|---|
+| `CosmosDBEndpoint` | `https://<account>.documents.azure.com:443/` |
+| `StorageAccountEndpoint` | `https://<account>.blob.core.windows.net/` |
+
+---
+
 ## AZ-204 Concepts Checklist
 
 - [ ] **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
@@ -853,3 +995,9 @@ Then navigate to `http://localhost:5173`. Click **Sign In**, complete Azure AD a
 - [ ] **JWT validation policy** — APIM `validate-jwt` on Internal Dashboard product verifies Azure AD tokens against OIDC discovery endpoint
 - [ ] **SAS token generation** — `FailedLabFilesEndpoint.cs` generates time-limited read-only SAS URIs for blob downloads via `BlobClient.GenerateSasUri`
 - [ ] **Azure AD app registration** — two registrations: API app exposes `LabResults.Read` scope; SPA app consumes it
+- [ ] **Azure Key Vault** — secrets stored in Key Vault; app settings reference them via `@Microsoft.KeyVault(...)`; runtime resolves transparently
+- [ ] **Managed Identity** — system-assigned identity on Function App; `DefaultAzureCredential` resolves to Managed Identity in Azure and `az login` locally
+- [ ] **Passwordless SDK clients** — `CosmosClient(endpoint, credential)` and `BlobServiceClient(uri, credential)` in `Program.cs`; no connection strings in SDK layer
+- [ ] **RBAC role assignments** — `Key Vault Secrets User`, `Cosmos DB Built-in Data Contributor`, `Storage Blob Data Contributor` granted to the Function App identity
+- [ ] **DefaultAzureCredential chain** — ordered credential resolution: environment → workload identity → managed identity → VS → CLI → PowerShell → browser
+- [ ] **System-assigned vs user-assigned identity** — system-assigned lifecycle tied to the resource; user-assigned independent and shareable

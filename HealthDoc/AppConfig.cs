@@ -4,19 +4,27 @@ public static class AppConfig
 {
     public static class CosmosDb
     {
-        public const string Connection = "CosmosDBConnectionString";
-        public const string Database = "LabResults";
-        public const string SummariesContainer = "ProcessingSummaries";
+        public const string Connection            = "CosmosDBConnectionString"; // binding attributes
+        public const string Endpoint              = "CosmosDBEndpoint";         // SDK client (passwordless)
+        public const string Database              = "LabResults";
+        public const string SummariesContainer    = "ProcessingSummaries";
         public const string LabResultRecordsContainer = "LabResultRecords";
+        public const string AuditLogContainer     = "AuditLog";
     }
 
     public static class Blob
     {
-        public const string Connection = "StorageConnectionString";
+        public const string Connection        = "StorageConnectionString";  // binding attributes
+        public const string Endpoint          = "StorageAccountEndpoint";   // SDK client (passwordless)
         public const string IncomingContainer = "lab-results-incoming";
         public const string IncomingTriggerPath = "lab-results-incoming/{name}";
         public const string ProcessedContainer = "lab-results-processed";
-        public const string FailedContainer = "lab-results-failed";
+        public const string FailedContainer   = "lab-results-failed";
+    }
+
+    public static class KeyVault
+    {
+        public const string Endpoint = "KeyVaultEndpoint";
     }
 
     public static class Activities
