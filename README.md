@@ -1,6 +1,8 @@
 # HealthDoc
 
-A regional healthcare network receives lab result CSV files from partner clinics daily. Previously, a staff member manually downloaded each file, validated it, entered results into the system, and emailed a confirmation back to the clinic — a process that was slow, error-prone, and impossible to scale. HealthDoc replaces that workflow with a fully automated ingestion pipeline: partner clinics POST CSV files to an HTTP endpoint through Azure API Management, which triggers an Azure Durable Functions orchestration that validates, parses, processes, stores, and confirms each batch without human intervention.
+A regional healthcare network receives lab result CSV files from partner clinics daily. Previously, a staff member manually downloaded each file, validated it, entered results into the system, and emailed a confirmation back to the clinic — a process that was slow, error-prone, and impossible to scale. 
+
+HealthDoc replaces that workflow with a fully automated ingestion pipeline: partner clinics POST CSV files to an HTTP endpoint through Azure API Management, which triggers an Azure Durable Functions orchestration that validates, parses, processes, stores, and confirms each batch without human intervention.
 
 Built as an AZ-204 exam study project. Every section of this README maps to an exam topic.
 
