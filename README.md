@@ -222,23 +222,25 @@ A single CSV upload flows through these steps end-to-end:
 
 1. **Upload** — A partner clinic POSTs a CSV body to `POST /labs/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes it to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client holds this ID to poll status later.
 
-2. **Trigger** — Two things fire simultaneously when the blob lands. `LabResultIngestionTrigger` (BlobTrigger) schedules a `LabResultOrchestrator` instance using the filename as the deterministic instance ID — if a duplicate upload arrives while an instance is still running, it is skipped; if the prior instance reached a terminal state, it is purged first. `EventGridLabResultAuditor` (EventGridTrigger) independently receives the `Microsoft.Storage.BlobCreated` system event and writes a `LabAuditRecord` to the `AuditLog` Cosmos container — providing an audit trail that is completely decoupled from the processing pipeline.
+2. **Orchestration trigger** — `LabResultIngestionTrigger` (BlobTrigger) fires when the blob lands and schedules a `LabResultOrchestrator` instance, using the filename as the deterministic instance ID. If a duplicate upload arrives while an instance is still running it is skipped; if the prior instance reached a terminal state it is purged first.
 
-3. **Validate** — The orchestrator calls `ValidateFile`. If required columns are missing or any `Result` field is non-numeric, it calls `MoveFile` to archive the blob to `lab-results-failed` and returns a failed `ProcessingSummary`. No records are processed.
+3. **Audit trigger** — `EventGridLabResultAuditor` (EventGridTrigger) independently receives the `Microsoft.Storage.BlobCreated` system event for the same upload and writes a `LabAuditRecord` to the `AuditLog` Cosmos container. Neither trigger knows about the other — the audit trail is fully decoupled from the processing pipeline.
 
-4. **Parse** — `ParseFile` splits the CSV into rows, skips the header, and maps each row to a `LabRecord` via `LabRecord.From(string[])`.
+4. **Validate** — The orchestrator calls `ValidateFile`. If required columns are missing or any `Result` field is non-numeric, it calls `MoveFile` to archive the blob to `lab-results-failed` and returns a failed `ProcessingSummary`. No records are processed.
 
-5. **Process (parallel)** — The orchestrator fans out: one `ProcessRecord` activity per `LabRecord`. Each activity calls `ProcessedRecord.From(record)`, which parses the `ReferenceRange` (e.g. `"4.0-5.6"`), determines `IsAbnormal`, and generates a Cosmos-ready document ID.
+5. **Parse** — `ParseFile` splits the CSV into rows, skips the header, and maps each row to a `LabRecord` via `LabRecord.From(string[])`.
 
-6. **Persist** — `StoreRecords` writes all `ProcessedRecord` documents to `LabResultRecords` via output binding and invalidates the Redis cache key for the affected clinic, so the next results query fetches fresh data. `StoreSummary` aggregates totals and abnormal counts into a `ProcessingSummary`, writing it to `ProcessingSummaries` with `ConfirmationStatus = Unknown`.
+6. **Process (parallel)** — The orchestrator fans out: one `ProcessRecord` activity per `LabRecord`. Each activity calls `ProcessedRecord.From(record)`, which parses the `ReferenceRange` (e.g. `"4.0-5.6"`), determines `IsAbnormal`, and generates a Cosmos-ready document ID.
 
-7. **Publish events** — If the batch contains abnormal results, `AbnormalResultEventPublisher` immediately publishes a `HealthDoc.Lab.AbnormalResultDetected` CloudEvent to the Event Grid custom topic, giving any subscriber early notification before the confirmation monitor runs.
+7. **Persist** — `StoreRecords` writes all `ProcessedRecord` documents to `LabResultRecords` via output binding and invalidates the Redis cache key for the affected clinic, so the next results query fetches fresh data. `StoreSummary` aggregates totals and abnormal counts into a `ProcessingSummary`, writing it to `ProcessingSummaries` with `ConfirmationStatus = Unknown`.
 
-8. **Confirm** — The monitor loop calls `CheckStorageConfirmation` up to 10 times with 30-second durable timers between attempts, querying Cosmos directly via the SDK. On success it sets `ConfirmationStatus = Confirmed`; after 10 failures it sets `TimedOut` and delegates the final Cosmos write to `WriteTimeoutSummary`.
+8. **Publish events** — If the batch contains abnormal results, `AbnormalResultEventPublisher` immediately publishes a `HealthDoc.Lab.AbnormalResultDetected` CloudEvent to the Event Grid custom topic, giving any subscriber early notification before the confirmation monitor runs.
 
-9. **Notify** — `BatchCompletePublisher` sends a `BatchCompletedMessage` to the `lab-results-notifications` Service Bus queue — consumed by `ServiceBusLabResultNotifier`. If abnormal results exist, `AbnormalAlertPublisher` sends the same message to the `lab-results-alerts` topic, which fans it out to the `clinical-alerts` subscription (all messages) and `critical-alerts` (SQL filter: `AbnormalCount > 5`). Separately, `DownstreamSystemNotifier` fires from the Cosmos DB trigger on `ProcessingSummaries` and emits a structured event to Application Insights.
+9. **Confirm** — The monitor loop calls `CheckStorageConfirmation` up to 10 times with 30-second durable timers between attempts, querying Cosmos directly via the SDK. On success it sets `ConfirmationStatus = Confirmed`; after 10 failures it sets `TimedOut` and delegates the final Cosmos write to `WriteTimeoutSummary`.
 
-10. **Archive** — `MoveFile` copies the blob from `lab-results-incoming` to `lab-results-processed` via server-side copy (`StartCopyFromUriAsync`) and deletes the source.
+10. **Notify** — `BatchCompletePublisher` sends a `BatchCompletedMessage` to the `lab-results-notifications` Service Bus queue — consumed by `ServiceBusLabResultNotifier`. If abnormal results exist, `AbnormalAlertPublisher` sends the same message to the `lab-results-alerts` topic, which fans it out to the `clinical-alerts` subscription (all messages) and `critical-alerts` (SQL filter: `AbnormalCount > 5`). Separately, `DownstreamSystemNotifier` fires from the Cosmos DB trigger on `ProcessingSummaries` and emits a structured event to Application Insights.
+
+11. **Archive** — `MoveFile` copies the blob from `lab-results-incoming` to `lab-results-processed` via server-side copy (`StartCopyFromUriAsync`) and deletes the source.
 
 ### Data Models
 
@@ -619,26 +621,7 @@ Partner clinics authenticate with an `Ocp-Apim-Subscription-Key` header. Subscri
 
 ### Internal Users: Azure AD & MSAL
 
-Internal staff access the dashboard through a React SPA that authenticates with Azure AD via MSAL, then passes the access token to APIM, where a `validate-jwt` policy verifies it before the request reaches the Function App.
-
-```
-Internal User
-   │
-   ▼
-HealthDoc.Dashboard (React + MSAL)
-   │ 1. Authorization code + PKCE flow
-   │ 2. Acquire access token (LabResults.Read scope)
-   │ 3. GET /labs/failed-files or /labs/results/{clinicId}
-   │    Authorization: Bearer <token>
-   ▼
-APIM — Internal Dashboard product
-   │ validate-jwt → Azure AD OIDC config
-   │ x-functions-key injected (API-level policy)
-   ▼
-Function App
-   ├── GET /api/blobs/failed   → FailedLabFilesEndpoint
-   └── GET /api/results/{clinicId}  → LabResultsEndpoint
-```
+Internal staff access the dashboard through a React SPA that authenticates with Azure AD via MSAL, then passes the access token to APIM, where a `validate-jwt` policy verifies it before the request reaches the Function App. See the [Internal Dashboard](#internal-dashboard) diagram for the full flow.
 
 #### App Registrations
 
