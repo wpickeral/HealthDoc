@@ -753,6 +753,8 @@ In this project: locally → #5 (`az login`). In Azure → #3 (Managed Identity)
 
 **Create Key Vault** (`kv-healthdoc-dev`, Standard tier, soft-delete and purge protection enabled).
 
+**Grant yourself the `Key Vault Secrets Officer` role** on the vault before adding secrets. This is required when RBAC is enabled on the vault — without it, the portal will return a 403 when you try to create or view secrets. Key Vault Secrets Officer allows read, write, list, and delete on secrets. Key Vault Administrator is broader (covers keys and certificates too) and more than needed for this task.
+
 **Add secrets:**
 
 | Secret name | Value |
