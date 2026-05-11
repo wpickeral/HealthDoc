@@ -759,6 +759,8 @@ In this project: locally → #5 (`az login`). In Azure → #3 (Managed Identity)
 |---|---|
 | `CosmosDBConnectionString` | Full Cosmos connection string |
 | `StorageConnectionString` | Full storage account connection string |
+| `EventGridTopicKey` | Key 1 from the Event Grid topic Access keys |
+| `EventGridTopicEndpoint` | Topic endpoint URL from the Event Grid topic overview |
 
 **Enable system-assigned Managed Identity:** Function App → **Identity** → **System assigned** → On.
 
