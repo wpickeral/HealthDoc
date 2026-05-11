@@ -883,6 +883,14 @@ The blob trigger already starts the pipeline when a CSV lands. Event Grid is a d
 
 **AZ-204 exam rule:** Use Event Grid for push-based fan-out with filtering. Use Service Bus for guaranteed delivery with retry and dead-lettering.
 
+### BlobTrigger and Event Grid Are Independent
+
+`BlobTrigger` works out of the box with no Event Grid resource — by default it uses **polling**: the Functions runtime periodically scans the container and compares against an internal receipt store to detect new blobs. No Azure Event Grid subscription is required for the pipeline to run.
+
+There is an opt-in mode called **Event Grid-based BlobTrigger** (available since Functions v2) where the runtime automatically subscribes to `BlobCreated` events for lower latency and better scale at high volumes. Same `[BlobTrigger]` attribute in code — the delivery mechanism is swapped out transparently via configuration. This project uses the default polling mode.
+
+`EventGridLabResultAuditor`, by contrast, uses an explicit `[EventGridTrigger]` and will **not fire until you create an Event Grid subscription** in Azure pointing to it (see Portal Setup below). The two triggers are fully independent — one polling, one push — and both fire on the same blob upload without knowing about each other.
+
 ### How It Fits Into the Pipeline
 
 **System event path** — an Event Grid subscription on the `lab-results-incoming` container sends `Microsoft.Storage.BlobCreated` events to `EventGridLabResultAuditor`. It writes a `LabAuditRecord` to the `AuditLog` Cosmos container. This runs independently of `LabResultIngestionTrigger` — both fire on the same upload with neither knowing about the other.
