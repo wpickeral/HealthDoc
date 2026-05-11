@@ -46,6 +46,13 @@ public static class AppConfig
         public const string PublishAbnormalEvent     = Prefix + "PublishAbnormalEvent";
     }
 
+    public static class Redis
+    {
+        public const string Connection = "RedisConnectionString";
+        public static string ResultsCacheKey(string clinicId) => $"results:{clinicId}";
+        public static readonly TimeSpan DefaultTtl = TimeSpan.FromSeconds(60);
+    }
+
     public static class EventGrid
     {
         public const string TopicEndpoint = "EventGridTopicEndpoint";

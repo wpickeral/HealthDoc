@@ -1237,6 +1237,157 @@ In the Cosmos DB account → **Data Explorer** → your `LabResults` database �
 
 ---
 
+## Azure Cache for Redis
+
+### Why Redis (and not just the APIM cache)?
+
+The APIM `cache-lookup`/`cache-store` policies were added in the APIM setup but have no effect on the Consumption tier without an external cache configured. Redis gives real, working cache-aside behaviour directly in application code and is the dedicated AZ-204 caching topic.
+
+| | APIM cache policy | Redis in application code |
+|---|---|---|
+| **Where it sits** | Gateway layer — before the Function is invoked | Application layer — inside the Function |
+| **What it caches** | Full HTTP responses | Any data (JSON, strings, binary) |
+| **Invalidation** | TTL only — no write-triggered invalidation | Your code calls `KeyDeleteAsync` on write |
+| **Visibility** | Invisible to the Function | Fully observable — log hits/misses, inspect keys |
+| **Tier support** | Consumption: no-op without external cache | Works everywhere |
+
+In this project both are in place: the APIM policy stubs remain as documentation, and Redis provides the actual caching behaviour. On the Developer tier or above, linking Redis as an APIM External Cache would make both layers active simultaneously.
+
+### Cache-Aside Pattern
+
+Cache-aside (also called lazy loading) is the primary pattern tested on AZ-204:
+
+```
+Read path                              Write path
+──────────────────────────────         ──────────────────────────────
+1. Check Redis for cache key           1. Write new records to Cosmos DB
+2. Cache hit  → return cached data     2. Delete the cache key for that clinicId
+3. Cache miss → query Cosmos DB        3. Next read becomes a cache miss and
+4. Store result in Redis (60s TTL)        repopulates from fresh Cosmos data
+5. Return Cosmos result
+```
+
+**Why write-invalidate (delete) rather than write-through (update)?**
+
+Write-invalidate is simpler — the activity only needs to know the `clinicId`, not the full result set. A write-through would require the activity to serialise and store the new records in Redis, which duplicates the work `LabResultsEndpoint` already does. The cost is one extra Cosmos query on the next read after a write, which is acceptable for append-only lab data.
+
+### What Changed
+
+**`LabResultsEndpoint.cs`** — injects `IConnectionMultiplexer`, implements cache-aside:
+
+```csharp
+var cached = await db.StringGetAsync(cacheKey);
+if (cached.HasValue)
+{
+    // Cache hit — skip Cosmos entirely
+    return deserialize and respond;
+}
+// Cache miss — query Cosmos, then store
+await db.StringSetAsync(cacheKey, JsonSerializer.Serialize(records), AppConfig.Redis.DefaultTtl);
+```
+
+**`PatientResultUpdater.cs`** — injects `IConnectionMultiplexer`, invalidates on write:
+
+```csharp
+await db.KeyDeleteAsync(AppConfig.Redis.ResultsCacheKey(clinicId));
+```
+
+Method changed from synchronous to `async Task<ProcessedRecord[]>` to await the cache delete before returning the records array to the Cosmos output binding.
+
+**`Program.cs`** — singleton `IConnectionMultiplexer` registration:
+
+```csharp
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+    ConnectionMultiplexer.Connect(connectionString));
+```
+
+`IConnectionMultiplexer` **must be a singleton** — it manages a connection pool. Creating one per request would exhaust TCP connections within seconds under any load.
+
+### Redis Data Types
+
+This project uses the **string** type (which holds any byte sequence, including JSON blobs). Other types worth knowing for the exam:
+
+| Type | Use case |
+|---|---|
+| **String** | Simple key-value, JSON blobs, counters (`INCR`) |
+| **Hash** | Object with named fields — cache a user profile without serialising the whole object |
+| **List** | Ordered sequences, simple queues (`LPUSH`/`RPOP`) |
+| **Set** | Unique members, membership tests (`SADD`/`SISMEMBER`) |
+| **Sorted set** | Ranked leaderboards, time-series by score |
+
+### TTL and Eviction
+
+**TTL** — set per key at write time (`StringSetAsync(key, value, TimeSpan)`). After expiry the key is deleted automatically. In this project: 60 seconds. A GET within that window is a cache hit; a GET after expiry is a miss and triggers a fresh Cosmos query.
+
+**Eviction policy** — when the cache reaches its memory limit, Redis evicts keys according to the configured policy:
+
+| Policy | Behaviour |
+|---|---|
+| `noeviction` | Returns errors on write when full — safe, but callers must handle it |
+| `allkeys-lru` | Evicts the least-recently-used key across all keys |
+| `volatile-lru` | Evicts LRU keys that have a TTL set (leaves TTL-less keys alone) |
+| `allkeys-lfu` | Evicts the least-frequently-used key |
+
+Azure Cache for Redis defaults to `volatile-lru`. Since every key in this project has a TTL, `volatile-lru` and `allkeys-lru` behave identically.
+
+### Azure Portal Setup
+
+#### Step 1 — Create Azure Cache for Redis
+
+Search **Azure Cache for Redis** → **Create**:
+
+| Field | Value |
+|---|---|
+| Resource group | same as Function App |
+| DNS name | `redis-healthdoc-dev` (globally unique, becomes `redis-healthdoc-dev.redis.cache.windows.net`) |
+| Cache SKU | **Basic C0** (250 MB, no SLA — cheapest option, ideal for study) |
+| Region | same region |
+
+> **SKU comparison for the exam:**
+>
+> | Tier | Replication | Clustering | Persistence | Best for |
+> |---|---|---|---|---|
+> | Basic | No | No | No | Dev/test |
+> | Standard | Yes (primary + replica) | No | No | Production without clustering |
+> | Premium | Yes | Yes (up to 10 shards) | RDB + AOF | High-throughput production |
+> | Enterprise | Yes | Yes | Yes + active geo-replication | Global, mission-critical |
+
+#### Step 2 — Copy the Connection String
+
+Redis instance → **Access keys** → copy the **Primary connection string** (StackExchange.Redis format). Add to `local.settings.json`:
+
+```json
+"RedisConnectionString": "<name>.redis.cache.windows.net:6380,password=<key>,ssl=True,abortConnect=False"
+```
+
+Add to the Function App configuration (or store in Key Vault and reference via `@Microsoft.KeyVault(...)`).
+
+#### Step 3 — Local Development with Docker
+
+To avoid Azure costs during local development, run Redis in Docker:
+
+```bash
+docker run -d -p 6379:6379 redis
+```
+
+Then set `local.settings.json`:
+
+```json
+"RedisConnectionString": "localhost:6379"
+```
+
+The StackExchange.Redis connection string format is identical for local and Azure — only the host and credentials differ.
+
+#### Step 4 — Optional: Link to APIM as External Cache
+
+To make the existing APIM `cache-lookup`/`cache-store` policies functional on Consumption tier:
+
+APIM → **External cache** → **Add** → select the Redis instance → **Save**.
+
+Once linked, APIM caches HTTP responses at the gateway and Redis stores them. The application-layer Redis cache and the APIM gateway cache operate independently — a request that hits the APIM cache never reaches the Function; a request that misses APIM but hits the application cache skips the Cosmos query.
+
+---
+
 ## AZ-204 Concepts Checklist
 
 - [ ] **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
@@ -1279,3 +1430,10 @@ In the Cosmos DB account → **Data Explorer** → your `LabResults` database �
 - [ ] **Event Grid subscription filters** — subject-begins-with filter on system event subscription limits delivery to `lab-results-incoming` container only
 - [ ] **Event Grid vs Service Bus vs BlobTrigger** — push fan-out vs durable queuing vs polling; know the decision matrix for the exam
 - [ ] **EventGrid Data Sender role** — RBAC role required for Managed Identity to publish custom events; `AzureKeyCredential` used locally, swap for `DefaultAzureCredential` in Azure
+- [ ] **Azure Cache for Redis** — `LabResultsEndpoint.cs` implements cache-aside: Redis check → Cosmos fallback → cache store (60s TTL)
+- [ ] **Cache invalidation on write** — `PatientResultUpdater.cs` calls `KeyDeleteAsync` after storing records so the next read fetches fresh data
+- [ ] **IConnectionMultiplexer singleton** — `Program.cs`; connection pool reuse is mandatory; one instance per application lifetime
+- [ ] **Cache-aside pattern** — read: check cache → miss → query source → populate cache; write: update source → invalidate cache key
+- [ ] **Redis data types** — project uses string (JSON blob); hash/list/set/sorted set covered in README for exam awareness
+- [ ] **TTL and eviction policies** — 60s TTL per key; `volatile-lru` default eviction; Basic/Standard/Premium/Enterprise SKU tradeoffs
+- [ ] **APIM external cache** — Consumption tier cache policies are no-ops without external Redis linked; portal setup documented in README

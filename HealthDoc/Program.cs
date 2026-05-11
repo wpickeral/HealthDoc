@@ -4,6 +4,7 @@ using Azure.Messaging.ServiceBus;
 using Azure.Storage.Blobs;
 using Azure;
 using HealthDoc;
+using StackExchange.Redis;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Builder;
@@ -56,6 +57,15 @@ builder.Services.AddSingleton(sp =>
     var key = Environment.GetEnvironmentVariable(AppConfig.EventGrid.TopicKey)
         ?? throw new InvalidOperationException($"{AppConfig.EventGrid.TopicKey} is not configured");
     return new EventGridPublisherClient(new Uri(endpoint), new AzureKeyCredential(key));
+});
+
+// IConnectionMultiplexer is thread safe and expensive to create — must be a singleton.
+// A new ConnectionMultiplexer per request would exhaust connection limits immediately.
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+{
+    var connection = Environment.GetEnvironmentVariable(AppConfig.Redis.Connection)
+        ?? throw new InvalidOperationException($"{AppConfig.Redis.Connection} is not configured");
+    return ConnectionMultiplexer.Connect(connection);
 });
 
 builder.Build().Run();
