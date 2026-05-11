@@ -713,7 +713,7 @@ The Function App itself authenticates to Cosmos DB, Blob Storage, and Key Vault 
 | **At rest** | Secrets in config files and app settings | Secrets stored in Key Vault; app settings hold a reference, not the value |
 | **In transit** | App authenticates with a shared key anyone can copy | App authenticates using its Azure identity — no secret to steal or rotate |
 
-#### What Changed in Code
+#### Authentication in Code
 
 `Program.cs` registers both SDK clients using `DefaultAzureCredential` and a service endpoint URI instead of a connection string:
 
