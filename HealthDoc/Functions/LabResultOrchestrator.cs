@@ -66,6 +66,13 @@ public class LabResultOrchestrator
             "Batch {BatchId} stored — {Total} records, {Abnormal} abnormal — starting confirmation monitor",
             summary.BatchId, summary.TotalRecords, summary.AbnormalCount);
 
+        // Event Grid — publish custom event immediately when abnormal results are detected.
+        // Fires before the monitor loop so downstream subscribers get early notification
+        // without waiting for Cosmos confirmation. Any webhook, Logic App, or function
+        // subscribed to the custom topic receives this independently of the Service Bus path.
+        if (summary.AbnormalCount > 0)
+            await context.CallActivityAsync(AppConfig.Activities.PublishAbnormalEvent, summary);
+
         // PATTERN 3: Monitor — poll until Cosmos confirms summary is written
         summary = await WaitForConfirmationAsync(context, summary, logger);
 

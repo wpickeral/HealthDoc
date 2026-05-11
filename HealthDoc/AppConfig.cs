@@ -43,6 +43,13 @@ public static class AppConfig
         public const string NotifyDownstreamSystems = Prefix + "NotifyDownstreamSystems";
         public const string PublishBatchComplete     = Prefix + "PublishBatchComplete";
         public const string PublishAbnormalAlert     = Prefix + "PublishAbnormalAlert";
+        public const string PublishAbnormalEvent     = Prefix + "PublishAbnormalEvent";
+    }
+
+    public static class EventGrid
+    {
+        public const string TopicEndpoint = "EventGridTopicEndpoint";
+        public const string TopicKey      = "EventGridTopicKey";
     }
 
     public static class ServiceBus

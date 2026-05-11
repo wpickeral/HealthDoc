@@ -1101,6 +1101,142 @@ Namespace → **Shared access policies** → `RootManageSharedAccessKey` → cop
 
 ---
 
+## Azure Event Grid
+
+### Why Event Grid (and not just BlobTrigger or Service Bus)?
+
+The existing blob trigger already starts the pipeline when a CSV lands. Event Grid is a separate exam topic and a fundamentally different event delivery model:
+
+| | BlobTrigger | Event Grid | Service Bus |
+|---|---|---|---|
+| **Model** | Polling (Functions runtime polls storage) | Push (Azure pushes event to endpoint) | Message queue / topic |
+| **Fan-out** | All instances race for one message | Every subscriber gets its own delivery | Queue = one consumer; topic = multiple |
+| **Filtering** | None | Subject prefix/suffix, event type | SQL expressions on message properties |
+| **Cross-system** | Azure Functions only | Any HTTPS endpoint, webhook, or supported Azure service | Any AMQP or HTTP client |
+| **Latency** | ~seconds (poll interval) | Near real-time push | Near real-time |
+| **Best for** | Simple per-file processing triggers | Reactive architecture with multiple consumers or cross-service events | Durable queuing, retry, ordering guarantees |
+
+**AZ-204 exam rule:** Use Event Grid when you need push-based fan-out to multiple independent subscribers with filtering. Use Service Bus when you need guaranteed delivery, retry, dead-lettering, or ordered processing.
+
+### What Was Added
+
+**System event path** — `EventGridLabResultAuditor` receives `Microsoft.Storage.BlobCreated` events via an Event Grid subscription on the `lab-results-incoming` container. It writes a `LabAuditRecord` to the `AuditLog` Cosmos container. This runs alongside `LabResultIngestionTrigger` — both fire on the same blob upload, with neither subscriber knowing about the other.
+
+**Custom event path** — `AbnormalResultEventPublisher` (activity) publishes a `HealthDoc.Lab.AbnormalResultDetected` CloudEvent to a custom Event Grid topic whenever a batch contains abnormal results. Called by the orchestrator immediately after `StoreSummary`, before the monitor loop, so subscribers get early notification.
+
+### System Events vs Custom Events
+
+```
+System events                          Custom events
+─────────────────────────────          ──────────────────────────────────
+Published by Azure services            Published by your application code
+(Blob Storage, Cosmos DB, etc.)        (via EventGridPublisherClient)
+
+Source: Azure resource itself          Source: custom topic you create
+
+Schema: predefined by the service      Schema: you define the event type,
+(e.g. Microsoft.Storage.BlobCreated)   subject, and data payload
+
+Subscription: on the resource          Subscription: on the custom topic
+(Storage account → Event Grid blade)   (custom topic → Subscriptions blade)
+```
+
+Both use the same delivery, retry, and dead-lettering infrastructure.
+
+### CloudEvents vs Event Grid Schema
+
+Event Grid supports two schemas. **CloudEvents** is the modern choice:
+
+| | CloudEvents (recommended) | Event Grid schema (legacy) |
+|---|---|---|
+| **Standard** | Open standard (CNCF) | Azure-specific |
+| **Portability** | Works with any CloudEvents-compatible system | Azure-only |
+| **`type` field** | `HealthDoc.Lab.AbnormalResultDetected` | `eventType` |
+| **`source` field** | `/healthdoc/labs/orchestrator` | `topic` (set by Azure) |
+
+This project uses CloudEvents. The `[EventGridTrigger]` binding in the isolated worker model accepts both schemas automatically.
+
+### Subscription Filters
+
+Event Grid subscriptions support two filter types:
+
+**Subject filters** — match on the event subject string:
+- `SubjectBeginsWith: /blobServices/default/containers/lab-results-incoming/` — only blobs in a specific container
+- `SubjectEndsWith: .csv` — only CSV files
+
+**Advanced filters** — match on event data fields:
+```json
+{ "operatorType": "NumberGreaterThan", "key": "data.AbnormalCount", "value": 5 }
+```
+
+The `EventGridLabResultAuditor` subscription uses a subject-begins-with filter so it only receives events from `lab-results-incoming`, not the processed or failed containers.
+
+### Retry Policy and Dead-Lettering
+
+If the subscriber endpoint returns a non-2xx response (or times out), Event Grid retries with exponential backoff:
+- Default: up to 24 hours, up to 30 retries
+- Configurable: set `MaxDeliveryAttempts` and `EventTimeToLive` on the subscription
+
+After all retry attempts are exhausted, the event can be **dead-lettered** to a blob container — enabling inspection of undelivered events. Enable dead-lettering on the subscription and point it at a storage container.
+
+### Azure Portal Setup
+
+#### Step 1 — Create the Custom Event Grid Topic
+
+Search **Event Grid Topics** → **Create**:
+
+| Field | Value |
+|---|---|
+| Resource group | same as Function App |
+| Name | `evgt-healthdoc-abnormal-alerts` |
+| Region | same region |
+| Event schema | **Cloud Event Schema v1.0** |
+
+After creation: **Access keys** blade → copy Key 1. Add to `local.settings.json` as `EventGridTopicKey`, and the topic endpoint as `EventGridTopicEndpoint`.
+
+In Azure (deployed): grant the Function App Managed Identity the **EventGrid Data Sender** RBAC role on the topic, then swap `AzureKeyCredential` for `DefaultAzureCredential` in `Program.cs`.
+
+#### Step 2 — Create the System Event Subscription (Blob → Auditor)
+
+Storage account → **Events** → **+ Event Subscription**:
+
+| Field | Value |
+|---|---|
+| Name | `lab-incoming-audit` |
+| Event schema | Cloud Event Schema v1.0 |
+| Filter to event types | `Microsoft.Storage.BlobCreated` |
+| Endpoint type | Azure Function |
+| Endpoint | `EventGridLabResultAuditor` |
+
+Add a subject filter:
+- **Subject begins with:** `/blobServices/default/containers/lab-results-incoming/`
+
+This ensures only uploads to the incoming container trigger the auditor — not writes to processed or failed.
+
+#### Step 3 — Create the Custom Event Subscription (Topic → Subscriber)
+
+Custom topic → **+ Event Subscription**:
+
+| Field | Value |
+|---|---|
+| Name | `abnormal-alerts-webhook` |
+| Event schema | Cloud Event Schema v1.0 |
+| Endpoint type | Web Hook (or another Function) |
+| Endpoint | your webhook URL |
+
+For a study environment, use [webhook.site](https://webhook.site) as the endpoint to inspect delivered events without building a consumer.
+
+#### Step 4 — Add the AuditLog Cosmos Container
+
+In the Cosmos DB account → **Data Explorer** → your `LabResults` database → **New Container**:
+
+| Field | Value |
+|---|---|
+| Container id | `AuditLog` |
+| Partition key | `/ClinicId` |
+
+---
+
 ## AZ-204 Concepts Checklist
 
 - [ ] **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
@@ -1137,3 +1273,9 @@ Namespace → **Shared access policies** → `RootManageSharedAccessKey` → cop
 - [ ] **Queues vs topics** — queue = competing consumers, one delivery; topic = fan-out, each subscription gets its own copy
 - [ ] **Peek-lock vs receive-and-delete** — peek-lock (default) re-delivers on failure; receive-and-delete removes immediately with no retry
 - [ ] **Message TTL and duplicate detection** — configurable at queue/topic level; duplicate detection deduplicates by MessageId within a time window
+- [ ] **Event Grid system events** — `EventGridLabResultAuditor.cs` (`[EventGridTrigger]`); subscription on blob container fires `Microsoft.Storage.BlobCreated`; writes `LabAuditRecord` to `AuditLog` Cosmos container
+- [ ] **Event Grid custom events** — `AbnormalResultEventPublisher.cs` publishes `HealthDoc.Lab.AbnormalResultDetected` CloudEvent via `EventGridPublisherClient`; registered as singleton in `Program.cs`
+- [ ] **CloudEvents vs Event Grid schema** — project uses CloudEvents (open standard); `[EventGridTrigger]` accepts both schemas automatically
+- [ ] **Event Grid subscription filters** — subject-begins-with filter on system event subscription limits delivery to `lab-results-incoming` container only
+- [ ] **Event Grid vs Service Bus vs BlobTrigger** — push fan-out vs durable queuing vs polling; know the decision matrix for the exam
+- [ ] **EventGrid Data Sender role** — RBAC role required for Managed Identity to publish custom events; `AzureKeyCredential` used locally, swap for `DefaultAzureCredential` in Azure

@@ -1,6 +1,8 @@
 using Azure.Identity;
+using Azure.Messaging.EventGrid;
 using Azure.Messaging.ServiceBus;
 using Azure.Storage.Blobs;
+using Azure;
 using HealthDoc;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Functions.Worker;
@@ -42,6 +44,18 @@ builder.Services.AddSingleton(sp =>
     var connection = Environment.GetEnvironmentVariable(AppConfig.ServiceBus.Connection)
         ?? throw new InvalidOperationException($"{AppConfig.ServiceBus.Connection} is not configured");
     return new ServiceBusClient(connection);
+});
+
+// EventGridPublisherClient — publishes custom events to the HealthDoc custom topic.
+// Uses AzureKeyCredential (topic access key) locally. In Azure, swap for DefaultAzureCredential
+// and grant the Function App's Managed Identity the "EventGrid Data Sender" RBAC role on the topic.
+builder.Services.AddSingleton(sp =>
+{
+    var endpoint = Environment.GetEnvironmentVariable(AppConfig.EventGrid.TopicEndpoint)
+        ?? throw new InvalidOperationException($"{AppConfig.EventGrid.TopicEndpoint} is not configured");
+    var key = Environment.GetEnvironmentVariable(AppConfig.EventGrid.TopicKey)
+        ?? throw new InvalidOperationException($"{AppConfig.EventGrid.TopicKey} is not configured");
+    return new EventGridPublisherClient(new Uri(endpoint), new AzureKeyCredential(key));
 });
 
 builder.Build().Run();
