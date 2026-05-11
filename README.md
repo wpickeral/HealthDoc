@@ -952,8 +952,6 @@ The portal presents several topic types and schema options — here is why each 
 | **Access tier** | Leave default | Controls ingestion throughput. Default (Basic) is sufficient for a study project. |
 | **System-assigned identity** | Optional | Enables Managed Identity publishing instead of key-based auth. The project uses `AzureKeyCredential` for simplicity locally. See the note below for the production upgrade path. |
 
-In Azure: grant the Function App Managed Identity the **EventGrid Data Sender** RBAC role on the topic, then replace `AzureKeyCredential` with `DefaultAzureCredential` in `Program.cs`.
-
 **Create system event subscription** — Storage account → **Events** → **+ Event Subscription**:
 
 | Field | Value |
