@@ -13,7 +13,7 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 ## Table of Contents
 
 1. [Azure Services](#azure-services)
-2. [Architecture](#architecture)
+2. [Architecture](#architecture) — [Ingestion Pipeline](#ingestion-pipeline) · [Partner Clinic Queries](#partner-clinic-queries) · [Internal Dashboard](#internal-dashboard)
 3. [Project Structure](#project-structure)
 4. [The Pipeline](#the-pipeline)
 5. [Durable Functions Patterns](#durable-functions-patterns)
@@ -108,39 +108,42 @@ Partner Clinic  ──── POST /labs/upload ────► Azure API Managem
                    CosmosDBTrigger ──► DownstreamSystemNotifier (App Insights telemetry)
 ```
 
-### Query & Dashboard
+### Partner Clinic Queries
 
-After a batch is processed, partner clinics poll for status and results using the instance ID returned at upload time. Internal staff access the dashboard through a React SPA that authenticates with Azure AD — the APIM Internal Dashboard product validates the JWT before any request reaches the Function App.
+After uploading, clinics poll for status using the instance ID returned at upload time, and can query processed results by clinic ID. Both endpoints sit behind the Clinic Standard APIM product — the same subscription key used for upload.
 
 ```
 Partner Clinic  ──── GET /labs/status/{instanceId} ────► Azure API Management
-                     GET /labs/results/{clinicId}                  │
-                     Ocp-Apim-Subscription-Key         ┌───────────┴───────────┐
-                                                       ▼                       ▼
-                                                GetBatchStatus        LabResultsEndpoint
-                                           (DurableClient)           (Redis → Cosmos)
+                     GET /labs/results/{clinicId}         (Clinic Standard product —
+                     Ocp-Apim-Subscription-Key             subscription key auth)
+                                                                    │
+                                                       ┌────────────┴────────────┐
+                                                       ▼                         ▼
+                                                GetBatchStatus          LabResultsEndpoint
+                                           (DurableClient —            (checks Redis first,
+                                            GetInstanceAsync)           falls back to Cosmos)
                                                        │
                                            202 Accepted  → still running
                                            200 OK        → completed
                                            500           → failed / terminated
+```
 
+### Internal Dashboard
 
+Internal staff sign in through the React SPA using MSAL. The acquired access token is passed to APIM, where the Internal Dashboard product validates it against Azure AD before forwarding the request to the Function App — no subscription key required.
+
+```
 Internal User  ──── Sign In (MSAL) ────► Azure Active Directory
 (HealthDoc.Dashboard)                        │ access token (LabResults.Read scope)
-                                             │
-               GET /labs/failed-files  ◄─────┘
-               GET /labs/results/{clinicId}
-               Authorization: Bearer <token>
-                                    │
-                                    ▼
-                           Azure API Management
-                        (Internal Dashboard product —
-                         validate-jwt, no subscription key)
-                                    │
-                       ┌───────────┴───────────┐
-                       ▼                       ▼
-             FailedLabFilesEndpoint    LabResultsEndpoint
-             (blob list + SAS URLs)    (Redis → Cosmos)
+                                             ▼
+               GET /labs/failed-files ───► Azure API Management
+               GET /labs/results/{id}      (Internal Dashboard product —
+               Authorization: Bearer        validate-jwt, no subscription key)
+                                                       │
+                                          ┌────────────┴────────────┐
+                                          ▼                         ▼
+                                FailedLabFilesEndpoint     LabResultsEndpoint
+                                (blob list + SAS URLs)     (Redis → Cosmos)
 ```
 
 ---
