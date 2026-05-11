@@ -971,6 +971,136 @@ Also add the two new endpoint settings:
 
 ---
 
+## Azure Service Bus
+
+### Why Service Bus (and not just the Cosmos DB trigger)?
+
+The existing `DownstreamSystemNotifier` already handles post-processing notifications via a Cosmos DB trigger. Service Bus solves a different class of problem:
+
+| Concern | Cosmos DB trigger | Service Bus |
+|---|---|---|
+| **Delivery guarantee** | At-least-once, tied to change feed | At-least-once with configurable retry and DLQ |
+| **Consumer model** | All trigger instances receive all changes | Competing consumers — one message processed by exactly one consumer |
+| **Fan-out** | All trigger instances process the same document | Topics fan out to multiple independent subscriptions simultaneously |
+| **Filtering** | None — all documents in the container trigger | SQL filters on subscriptions route messages by content |
+| **Decoupling** | Consumer must know the Cosmos account | Consumer only needs a connection string to the namespace |
+| **Cross-system** | Cosmos-native — hard to bridge to non-Azure consumers | Any system that supports AMQP or HTTP can receive messages |
+
+This project keeps **both** patterns so both are documented — they are complementary, not competing.
+
+### What Was Added
+
+After `StoreSummary` writes the batch summary to Cosmos, the orchestrator calls two new activities:
+
+1. **`BatchCompletePublisher`** — sends a `BatchCompletedMessage` to the `lab-results-notifications` **queue** via `[ServiceBusOutput]` binding. Every completed batch goes here.
+2. **`AbnormalAlertPublisher`** — sends the same message to the `lab-results-alerts` **topic**, but only when `AbnormalCount > 0`. Two subscriptions on the topic filter this independently.
+
+A new **`ServiceBusLabResultNotifier`** function consumes the notifications queue with `[ServiceBusTrigger]` and emits an App Insights custom event. A **`ServiceBusDeadLetterMonitor`** timer function peeks the dead-letter sub-queue every 5 minutes and logs any messages found there.
+
+### Queues vs Topics vs Subscriptions
+
+```
+Queue (lab-results-notifications)
+  └─ One message → one consumer
+     Used for: guaranteed delivery of every batch to exactly one notifier
+
+Topic (lab-results-alerts)
+  ├─ Subscription: clinical-alerts    (no filter — receives all messages)
+  └─ Subscription: critical-alerts    (SQL filter: AbnormalCount > 5)
+     Used for: fan-out — one message delivered independently to each matching subscription
+```
+
+**AZ-204 exam rule:** Use a queue when one consumer should process each message. Use a topic when multiple independent consumers each need their own copy, optionally with content-based filtering.
+
+### Peek-Lock vs Receive-and-Delete
+
+`[ServiceBusTrigger]` uses **peek-lock** by default, which is the safer and more common mode:
+
+| | Peek-lock | Receive-and-delete |
+|---|---|---|
+| **How it works** | Message is locked (invisible) while processing; completed on success, released on failure | Message is deleted immediately on receipt — no retry possible |
+| **On function exception** | Lock expires → message reappears → redelivered | Message is gone — data loss on failure |
+| **MaxDeliveryCount** | After N failures, message moves to dead-letter queue | N/A — no redelivery |
+| **Best for** | Any processing where you cannot afford to lose a message | Low-value idempotent operations where duplicate processing is worse than loss |
+
+### Dead-Letter Queue
+
+Messages land in the dead-letter sub-queue (`{queue}/$DeadLetterQueue`) when:
+- Delivery count exceeds `MaxDeliveryCount` (default: 10) after repeated processing failures
+- Message TTL expires before it is consumed
+- A consumer explicitly dead-letters it via `DeadLetterMessageAsync`
+
+`ServiceBusDeadLetterMonitor` peeks (not receives) so messages remain visible for human inspection. The `SubQueue.DeadLetter` receiver option targets the sub-queue directly:
+
+```csharp
+_serviceBusClient.CreateReceiver(
+    AppConfig.ServiceBus.NotificationsQueue,
+    new ServiceBusReceiverOptions { SubQueue = SubQueue.DeadLetter });
+```
+
+### Message TTL and Duplicate Detection
+
+Two additional Service Bus features worth knowing for the exam:
+
+**Message TTL** — set `TimeToLive` on `ServiceBusMessage` or at the queue/topic level. Expired messages are dead-lettered (if dead-lettering on expiration is enabled) or silently discarded.
+
+**Duplicate detection** — enable on the queue/topic and set a `MessageId` on each message. Service Bus discards any message with an ID it has seen within the duplicate detection window (default: 10 minutes). Useful for idempotent retry scenarios.
+
+### Azure Portal Setup
+
+#### Step 1 — Create the Service Bus Namespace
+
+Search **Service Bus** → **Create**.
+
+| Field | Value |
+|---|---|
+| Resource group | same as Function App |
+| Namespace name | `sb-healthdoc-dev` (globally unique) |
+| Region | same region |
+| Pricing tier | **Standard** (required for topics; Basic only supports queues) |
+
+#### Step 2 — Create the Notifications Queue
+
+Namespace → **Queues** → **Add**:
+
+| Field | Value |
+|---|---|
+| Name | `lab-results-notifications` |
+| Max delivery count | 10 |
+| Message TTL | 14 days (default) |
+| Dead-lettering on message expiration | enabled |
+
+#### Step 3 — Create the Alerts Topic and Subscriptions
+
+Namespace → **Topics** → **Add**:
+
+| Field | Value |
+|---|---|
+| Name | `lab-results-alerts` |
+
+Then open the topic → **Subscriptions** → **Add** twice:
+
+**Subscription 1:**
+
+| Field | Value |
+|---|---|
+| Name | `clinical-alerts` |
+| Filter type | None (receives all messages) |
+
+**Subscription 2:**
+
+| Field | Value |
+|---|---|
+| Name | `critical-alerts` |
+| Filter type | SQL filter |
+| Filter expression | `AbnormalCount > 5` |
+
+#### Step 4 — Copy the Connection String
+
+Namespace → **Shared access policies** → `RootManageSharedAccessKey` → copy the primary connection string. Add it to `local.settings.json` as `ServiceBusConnectionString`, and to the Function App configuration (or as a Key Vault secret referenced via `@Microsoft.KeyVault(...)`).
+
+---
+
 ## AZ-204 Concepts Checklist
 
 - [ ] **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
@@ -1001,3 +1131,9 @@ Also add the two new endpoint settings:
 - [ ] **RBAC role assignments** — `Key Vault Secrets User`, `Cosmos DB Built-in Data Contributor`, `Storage Blob Data Contributor` granted to the Function App identity
 - [ ] **DefaultAzureCredential chain** — ordered credential resolution: environment → workload identity → managed identity → VS → CLI → PowerShell → browser
 - [ ] **System-assigned vs user-assigned identity** — system-assigned lifecycle tied to the resource; user-assigned independent and shareable
+- [ ] **Service Bus queue** — `BatchCompletePublisher.cs` uses `[ServiceBusOutput]`; `ServiceBusLabResultNotifier.cs` uses `[ServiceBusTrigger]` with peek-lock
+- [ ] **Service Bus topic + subscriptions** — `AbnormalAlertPublisher.cs` publishes to `lab-results-alerts` topic; two subscriptions (all alerts / SQL filter `AbnormalCount > 5`)
+- [ ] **Dead-letter queue** — `ServiceBusDeadLetterMonitor.cs` peeks DLQ via `SubQueue.DeadLetter` receiver option on a timer trigger
+- [ ] **Queues vs topics** — queue = competing consumers, one delivery; topic = fan-out, each subscription gets its own copy
+- [ ] **Peek-lock vs receive-and-delete** — peek-lock (default) re-delivers on failure; receive-and-delete removes immediately with no retry
+- [ ] **Message TTL and duplicate detection** — configurable at queue/topic level; duplicate detection deduplicates by MessageId within a time window

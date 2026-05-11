@@ -1,4 +1,5 @@
 using Azure.Identity;
+using Azure.Messaging.ServiceBus;
 using Azure.Storage.Blobs;
 using HealthDoc;
 using Microsoft.Azure.Cosmos;
@@ -33,6 +34,14 @@ builder.Services.AddSingleton(sp =>
     var endpoint = Environment.GetEnvironmentVariable(AppConfig.Blob.Endpoint)
         ?? throw new InvalidOperationException($"{AppConfig.Blob.Endpoint} is not configured");
     return new BlobServiceClient(new Uri(endpoint), credential);
+});
+
+// ServiceBusClient — thread safe, registered as singleton, used by the DLQ monitor
+builder.Services.AddSingleton(sp =>
+{
+    var connection = Environment.GetEnvironmentVariable(AppConfig.ServiceBus.Connection)
+        ?? throw new InvalidOperationException($"{AppConfig.ServiceBus.Connection} is not configured");
+    return new ServiceBusClient(connection);
 });
 
 builder.Build().Run();

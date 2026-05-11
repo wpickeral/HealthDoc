@@ -41,6 +41,17 @@ public static class AppConfig
         public const string WriteTimeoutSummary = Prefix + "WriteTimeoutSummary";
         public const string MoveFile = Prefix + "MoveFile";
         public const string NotifyDownstreamSystems = Prefix + "NotifyDownstreamSystems";
+        public const string PublishBatchComplete     = Prefix + "PublishBatchComplete";
+        public const string PublishAbnormalAlert     = Prefix + "PublishAbnormalAlert";
+    }
+
+    public static class ServiceBus
+    {
+        public const string Connection         = "ServiceBusConnectionString";
+        public const string NotificationsQueue = "lab-results-notifications";
+        public const string AlertsTopic        = "lab-results-alerts";
+        public const string ClinicalAlertsSub  = "clinical-alerts";
+        public const string CriticalAlertsSub  = "critical-alerts";
     }
 
     public static class Metrics

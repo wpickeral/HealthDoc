@@ -69,6 +69,14 @@ public class LabResultOrchestrator
         // PATTERN 3: Monitor — poll until Cosmos confirms summary is written
         summary = await WaitForConfirmationAsync(context, summary, logger);
 
+        // Service Bus — notify downstream systems via queue (all batches)
+        await context.CallActivityAsync(AppConfig.Activities.PublishBatchComplete, summary);
+
+        // Service Bus — publish to alert topic if any abnormal results (topics fan out to
+        // multiple subscriptions; a SQL filter on critical-alerts limits to AbnormalCount > 5)
+        if (summary.AbnormalCount > 0)
+            await context.CallActivityAsync(AppConfig.Activities.PublishAbnormalAlert, summary);
+
         await MoveFileAsync(context, payload.FileName, AppConfig.Blob.ProcessedContainer,
             "Processing completed successfully");
 
