@@ -952,6 +952,8 @@ If a subscriber returns non-2xx or times out, Event Grid retries with exponentia
 
 Once created, go to the topic → **Access keys** → copy **Key 1** as `EventGridTopicKey` in `local.settings.json`. Copy the **Topic Endpoint** URL as `EventGridTopicEndpoint`.
 
+To verify events are being delivered, add a test subscription on the topic: **+ Event Subscription** → endpoint type **Web Hook** → use [webhook.site](https://webhook.site) to inspect the raw CloudEvent payload.
+
 **Create system event subscription** — Storage account → **Events** → **+ Event Subscription**:
 
 | Field | Value |
@@ -959,10 +961,6 @@ Once created, go to the topic → **Access keys** → copy **Key 1** as `EventGr
 | Filter to event types | `Microsoft.Storage.BlobCreated` |
 | Endpoint type | Azure Function → `EventGridLabResultAuditor` |
 | Subject begins with | `/blobServices/default/containers/lab-results-incoming/` |
-
-**Create custom event subscription** — Custom topic → **+ Event Subscription**, endpoint: Web Hook. Use [webhook.site](https://webhook.site) in a study environment to inspect delivered events.
-
-**Add `AuditLog` Cosmos container** — partition key `/ClinicId`.
 
 ---
 
