@@ -801,7 +801,7 @@ The `--principal-id` is the Object (principal) ID shown in the Function App → 
 @Microsoft.KeyVault(VaultName=kv-health-doc-dev;SecretName=CosmosDBConnectionString)
 ```
 
-Also add the endpoint settings:
+Also add the endpoint settings. These are not connection strings — they are the service URLs used by the SDK clients (`CosmosClient` and `BlobServiceClient`) in `Program.cs`, which authenticate with `DefaultAzureCredential` and connect directly to the service endpoint. The binding attributes use the Key Vault-referenced connection strings above; the SDK clients use these endpoint URLs. Both are required.
 
 | Name | Value |
 |---|---|
