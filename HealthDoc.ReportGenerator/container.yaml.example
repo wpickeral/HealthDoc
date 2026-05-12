@@ -1,6 +1,10 @@
 apiVersion: '2021-09-01'
 location: <region>
 name: aci-healthdoc-report-generator
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    /subscriptions/<subscription-id>/resourcegroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity-name>: {}
 properties:
   containers:
   - name: report-generator

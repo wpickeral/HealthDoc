@@ -3,3 +3,5 @@ obj/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/
+HealthDoc/local.settings.json
+HealthDoc.ReportGenerator/container.yaml
