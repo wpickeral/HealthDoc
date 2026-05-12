@@ -1225,18 +1225,28 @@ docker push acrhealthdocdev.azurecr.io/healthdoc-report-generator:latest
 
 **Testing locally without Docker** — the simplest approach. Runs on the host where `az login` credentials are available:
 
-Before running locally, grant your user identity the Cosmos DB data plane role. This is separate from the portal IAM blade — see [Authentication & Security](#authentication--security) for why.
+Before running locally, grant your user identity the required data plane roles. Your object ID can also be found in the portal: **Azure Active Directory → Users → your account → Object ID**.
 
 ```bash
-# One-time setup: find your user's object ID
-az ad signed-in-user show --query id -o tsv
+# One-time setup — assign yourself the required data plane roles
+PRINCIPAL_ID=$(az ad signed-in-user show --query id -o tsv)
 
+# Cosmos DB — data plane role; does NOT appear in the portal IAM blade
+# See Authentication & Security for why this is a separate role assignment
 az cosmosdb sql role assignment create \
   --account-name <cosmos-account-name> \
   --resource-group <rg> \
   --role-definition-name "Cosmos DB Built-in Data Contributor" \
-  --principal-id <your-object-id> \
+  --principal-id $PRINCIPAL_ID \
   --scope "/"
+
+# Blob Storage — data plane role; also available via portal IAM blade
+STORAGE_ID=$(az storage account show --name <storage-account-name> --resource-group <rg> --query id -o tsv)
+
+az role assignment create \
+  --role "Storage Blob Data Contributor" \
+  --assignee $PRINCIPAL_ID \
+  --scope $STORAGE_ID
 ```
 
 ```bash
