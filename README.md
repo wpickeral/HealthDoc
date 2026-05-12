@@ -1112,23 +1112,34 @@ Azure Managed Redis defaults to `volatile-lru`. Since every key in this project 
 
 ### Portal Setup
 
-**Create Azure Managed Redis** (`redis-healthdoc-dev`). In the portal, search **Azure Managed Redis** and select the **Flash F0** tier (cheapest, ideal for study).
+**Create Azure Managed Redis** — Portal → **Create a resource** → search **Azure Managed Redis**:
 
-**SKU comparison:**
+| Field | Value |
+|---|---|
+| **Name** | `redis-healthdoc-dev` |
+| **Region** | Same as your Function App |
+| **Data tier** | **Flash** |
+| **Cache size** | **F0** (cheapest, ideal for study) |
 
-| Tier | Replication | Clustering | Persistence | Best for |
-|---|---|---|---|---|
-| Flash F0 / F1 | No | No | No | Dev/test |
-| Balanced B0–B10 | Yes | No | Yes | General production |
-| Memory Optimized M10–M90 | Yes | Yes | Yes | Memory-intensive workloads |
-| Compute Optimized X3–X20 | Yes | Yes | Yes | High-throughput production |
+Wait for **Status: Running** on the Overview page before connecting.
 
-> **Microsoft Entra ID authentication is recommended over access keys.** Enabling access keys can lead to vulnerabilities if the key is leaked to source control or exposed publicly. In the portal, disable access key authentication under **Authentication** and enable **Microsoft Entra ID** — the cache instance then accepts token-based connections using Managed Identity, with no shared secret to manage or rotate.
+**Tier comparison:**
 
-For this study project the connection string approach is used for simplicity. Copy the **Primary connection string** from **Access keys** and add to `local.settings.json`:
+| Tier | Best for |
+|---|---|
+| Flash (F0–F700) | Dev/test; RAM + NVMe storage |
+| Memory Optimized (M10–M90) | Memory-intensive, low-vCPU workloads |
+| Balanced (B0–B10) | General production |
+| Compute Optimized (X3–X20) | High-throughput production |
+
+**Authentication:** Microsoft Entra ID is enabled by default and access keys are disabled by default. This is the recommended posture — no shared secret to leak or rotate. To authenticate with Managed Identity, add the `Microsoft.Azure.StackExchangeRedis` NuGet package to the Functions project and assign the Function App identity the **Redis Cache Contributor** role on the instance.
+
+For this study project, access keys are used for simplicity. To enable them: **Authentication** → **Access keys** tab → enable access key authentication. Copy **Primary access key** and the endpoint from **Overview**.
+
+Azure Managed Redis uses **port 10000** and a different endpoint format from Azure Cache for Redis. Add to `local.settings.json`:
 
 ```json
-"RedisConnectionString": "<name>.redis.cache.windows.net:6380,password=<key>,ssl=True,abortConnect=False"
+"RedisConnectionString": "<name>.<region>.redis.azure.net:10000,password=<key>,ssl=True,abortConnect=False"
 ```
 
 For local development with Docker:
