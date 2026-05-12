@@ -1272,14 +1272,54 @@ In Azure, ACI injects Managed Identity credentials automatically — no environm
 
 ### Deploy to ACI
 
-Copy `HealthDoc.ReportGenerator/container.yaml.example` to `container.yaml` (gitignored), fill in your values, and deploy:
+#### Step 1 — Create a user-assigned managed identity
+
+A **user-assigned identity** is created once and persists independently of the container group. This matters because `restartPolicy: Never` means you delete and recreate the container group for each run — a system-assigned identity would be deleted with it, losing all role assignments.
+
+```bash
+az identity create --name id-healthdoc-report-generator --resource-group <rg>
+
+PRINCIPAL_ID=$(az identity show \
+  --name id-healthdoc-report-generator \
+  --resource-group <rg> \
+  --query principalId -o tsv)
+
+IDENTITY_ID=$(az identity show \
+  --name id-healthdoc-report-generator \
+  --resource-group <rg> \
+  --query id -o tsv)
+```
+
+#### Step 2 — Assign data plane roles to the identity
+
+```bash
+# Cosmos DB — data plane role; does NOT appear in the portal IAM blade
+az cosmosdb sql role assignment create \
+  --account-name <cosmos-account-name> \
+  --resource-group <rg> \
+  --role-definition-name "Cosmos DB Built-in Data Contributor" \
+  --principal-id $PRINCIPAL_ID \
+  --scope "/"
+
+# Blob Storage — data plane role; also available via portal IAM blade
+STORAGE_ID=$(az storage account show --name <storage-account-name> --resource-group <rg> --query id -o tsv)
+
+az role assignment create \
+  --role "Storage Blob Data Contributor" \
+  --assignee $PRINCIPAL_ID \
+  --scope $STORAGE_ID
+```
+
+#### Step 3 — Deploy
+
+Copy `HealthDoc.ReportGenerator/container.yaml.example` to `container.yaml` (gitignored), fill in your values including `$IDENTITY_ID` in the `userAssignedIdentities` block, then deploy:
 
 ```bash
 ACR_PASSWORD=$(az acr credential show --name acrhealthdocdev --query passwords[0].value -o tsv)
 az container create --resource-group <rg> --file container.yaml
 ```
 
-The container runs, generates the report, and stops. Each invocation of `az container create` is a new run.
+The container runs, generates the report, and stops. Each invocation of `az container create` is a new run. Because the identity is user-assigned, the role assignments remain intact across runs.
 
 **`secureEnvironmentVariables` vs `environmentVariables`:**
 
