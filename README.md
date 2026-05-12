@@ -24,7 +24,8 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 10. [Azure Event Grid](#azure-event-grid)
 11. [Azure Managed Redis](#azure-managed-redis)
 12. [Container Deployment](#container-deployment)
-13. [AZ-204 Concepts Checklist](#az-204-concepts-checklist)
+13. [End-to-End Testing](#end-to-end-testing)
+14. [AZ-204 Concepts Checklist](#az-204-concepts-checklist)
 
 ---
 
@@ -1277,6 +1278,230 @@ az container show --resource-group <rg> --name aci-healthdoc-report-generator \
 # View output logs
 az container logs --resource-group <rg> --name aci-healthdoc-report-generator
 ```
+
+---
+
+## End-to-End Testing
+
+This section walks through a complete pipeline run and explains where to validate each stage. The goal is to confirm that every service fired, data landed in the right place, and no silent failures occurred.
+
+### Prerequisites
+
+- Function App is running (locally or deployed to Azure)
+- All App Settings / `local.settings.json` values are set: Cosmos, Storage, Service Bus, Event Grid, Redis, Key Vault
+- Application Insights is connected (`APPLICATIONINSIGHTS_CONNECTION_STRING` is set)
+
+---
+
+### Step 1 — Upload a CSV via APIM
+
+POST a small CSV through the APIM gateway. Use the Clinic Standard subscription key from **APIM → Subscriptions**.
+
+```bash
+curl -X POST https://<apim-name>.azure-api.net/labs/upload \
+  -H "Ocp-Apim-Subscription-Key: <subscription-key>" \
+  -H "Content-Type: text/csv" \
+  --data-binary @sample.csv
+```
+
+A minimal valid CSV (two records, one abnormal):
+
+```csv
+PatientId,TestName,Result,IsAbnormal,ClinicId
+P001,Glucose,5.2,false,CLINIC-01
+P002,Glucose,12.1,true,CLINIC-01
+```
+
+**Expected response:** `202 Accepted` with a JSON body containing `instanceId`.
+
+```json
+{ "instanceId": "abc123..." }
+```
+
+Save the `instanceId` — you will use it in the next step.
+
+---
+
+### Step 2 — Poll orchestration status
+
+```bash
+curl https://<apim-name>.azure-api.net/labs/status/<instanceId> \
+  -H "Ocp-Apim-Subscription-Key: <subscription-key>"
+```
+
+| Response | Meaning |
+|---|---|
+| `202 Accepted` | Orchestration still running — poll again |
+| `200 OK` with `"runtimeStatus": "Completed"` | Pipeline finished successfully |
+| `500` | Orchestration faulted — check App Insights |
+
+---
+
+### Step 3 — Validate in Azure Storage
+
+Open **Storage Account → Containers**:
+
+| Container | Expected |
+|---|---|
+| `lab-results-incoming` | File removed (moved after processing) |
+| `lab-results-processed` | File present with original name |
+| `lab-results-failed` | Empty (file was valid) |
+
+To test the failure path, upload a CSV missing required columns. The file should appear in `lab-results-failed` and `lab-results-incoming` should be empty.
+
+---
+
+### Step 4 — Validate in Cosmos DB
+
+Open **Cosmos DB → Data Explorer**:
+
+| Container | Expected |
+|---|---|
+| `LabResultRecords` | One document per CSV row (`PatientId`, `TestName`, `Result`, `IsAbnormal`, `ClinicId`) |
+| `ProcessingSummaries` | One document with `TotalRecords: 2`, `AbnormalCount: 1`, `ClinicId: CLINIC-01` |
+| `AuditLog` | One document from `EventGridLabResultAuditor` with `EventType: BlobCreated` |
+
+---
+
+### Step 5 — Validate Service Bus messages
+
+Open **Service Bus → Queues → lab-results-notifications → Service Bus Explorer**:
+
+- Select **Peek** mode
+- Confirm one message is present with `BatchId`, `ClinicId`, `TotalRecords`, `AbnormalCount` in the message body
+
+Open **Service Bus → Topics → lab-results-alerts → Subscriptions**:
+
+| Subscription | Expected message count | Condition |
+|---|---|---|
+| `clinical-alerts` | 1 | Any abnormal count > 0 |
+| `critical-alerts` | 0 | AbnormalCount must be > 5 to receive a message |
+
+To trigger `critical-alerts`, upload a CSV with more than 5 abnormal rows.
+
+---
+
+### Step 6 — Validate Event Grid
+
+If you uploaded abnormal records, the custom Event Grid topic should have fired `AbnormalResultDetected`. To verify delivery, check the metric on the topic:
+
+**Event Grid Topic → Metrics → Published Events / Delivered Events**
+
+Both counts should be non-zero. A gap between Published and Delivered indicates a delivery failure — check the subscription's **Dead Letter** storage if enabled.
+
+---
+
+### Step 7 — Validate Redis cache
+
+After a successful pipeline run, the `results:{clinicId}` key is invalidated by `StoreRecords`. Query the results endpoint to prime the cache:
+
+```bash
+curl https://<apim-name>.azure-api.net/labs/results/CLINIC-01 \
+  -H "Ocp-Apim-Subscription-Key: <subscription-key>"
+```
+
+Call it twice. The second call should return faster — the first populates Redis, the second hits the cache and skips the Cosmos query. To confirm:
+
+**Application Insights → Logs:**
+
+```kusto
+traces
+| where message has "Cache hit" or message has "Cache miss"
+| order by timestamp desc
+| take 10
+```
+
+The first call logs `Cache miss: results:CLINIC-01`; the second logs `Cache hit: results:CLINIC-01`.
+
+---
+
+### Step 8 — Validate in Application Insights
+
+Application Insights is the primary observability tool for the pipeline. All custom business events and structured logs are captured there.
+
+#### Live Metrics
+
+During an upload, open **Application Insights → Live Metrics**. You will see function invocations, dependency calls (Cosmos, Service Bus, Redis), and any exceptions in real time.
+
+#### Custom Events
+
+```kusto
+customEvents
+| where timestamp > ago(10m)
+| project timestamp, name, customDimensions
+| order by timestamp desc
+```
+
+Expected events in order:
+
+| Event name | Source | Key properties |
+|---|---|---|
+| `LabResultsProcessed` | `DownstreamSystemNotifier` (Cosmos trigger) | `ClinicId`, `RecordCount`, `AbnormalCount` |
+| `LabResultsBatchComplete` | `ServiceBusLabResultNotifier` (SB queue) | `BatchId`, `ClinicId`, `TotalRecords`, `AbnormalCount` |
+| `ClinicalAlertReceived` | `ClinicalAlertHandler` (SB topic) | `BatchId`, `ClinicId`, `AbnormalCount` |
+| `CriticalAlertReceived` | `CriticalAlertHandler` (SB topic, > 5 only) | `BatchId`, `ClinicId`, `AbnormalCount` |
+| `FileValidationFailed` | `FileValidator` (on invalid upload) | `FileName`, `Reason` |
+
+#### Tracing the full pipeline
+
+To see all telemetry for a single upload as a distributed trace:
+
+**Application Insights → Transaction Search → filter by Operation ID**
+
+Or use the end-to-end transaction view:
+
+```kusto
+requests
+| where timestamp > ago(10m)
+| where name == "UploadLabResultsEndpoint"
+| project operation_Id, timestamp, duration, resultCode
+| order by timestamp desc
+| take 5
+```
+
+Take the `operation_Id` from a row, then:
+
+```kusto
+union requests, dependencies, traces, exceptions, customEvents
+| where operation_Id == "<paste-id>"
+| project timestamp, itemType, name, message, duration
+| order by timestamp asc
+```
+
+This shows every span and log line from the HTTP upload through to the Cosmos trigger and Service Bus consumers — the full pipeline in one query.
+
+#### Checking for exceptions
+
+```kusto
+exceptions
+| where timestamp > ago(1h)
+| project timestamp, problemId, outerMessage, operation_Name
+| order by timestamp desc
+```
+
+An empty result means the pipeline completed without unhandled exceptions.
+
+---
+
+### Step 9 — Run the report generator
+
+After the pipeline has processed at least one batch, run the report generator to confirm it can read from Cosmos and write to Blob Storage:
+
+```bash
+cd HealthDoc.ReportGenerator
+dotnet run
+```
+
+Expected output:
+
+```
+Fetching summaries from Cosmos DB...
+Found 1 summaries. Writing report...
+Report written to: reports/report-20260512T143022Z.csv
+Done.
+```
+
+Verify the CSV appeared in **Storage Account → Containers → reports**.
 
 ---
 
