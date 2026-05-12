@@ -1225,6 +1225,20 @@ docker push acrhealthdocdev.azurecr.io/healthdoc-report-generator:latest
 
 **Testing locally without Docker** — the simplest approach. Runs on the host where `az login` credentials are available:
 
+Before running locally, grant your user identity the Cosmos DB data plane role. This is separate from the portal IAM blade — see [Authentication & Security](#authentication--security) for why.
+
+```bash
+# One-time setup: find your user's object ID
+az ad signed-in-user show --query id -o tsv
+
+az cosmosdb sql role assignment create \
+  --account-name <cosmos-account-name> \
+  --resource-group <rg> \
+  --role-definition-name "Cosmos DB Built-in Data Contributor" \
+  --principal-id <your-object-id> \
+  --scope "/"
+```
+
 ```bash
 cd HealthDoc.ReportGenerator
 COSMOS_ENDPOINT=https://<account>.documents.azure.com:443/ \
