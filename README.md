@@ -23,7 +23,7 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 9. [Azure Service Bus](#azure-service-bus)
 10. [Azure Event Grid](#azure-event-grid)
 11. [Azure Managed Redis](#azure-managed-redis)
-12. [Container Deployment](#container-deployment)
+12. [Azure Container Instances](#azure-container-instances)
 13. [End-to-End Testing](#end-to-end-testing)
 14. [AZ-204 Coverage Map](#az-204-coverage-map)
 
@@ -1155,7 +1155,7 @@ docker run -d -p 6379:6379 redis
 
 ---
 
-## Container Deployment
+## Azure Container Instances
 
 `HealthDoc.ReportGenerator` is a .NET 10 console app that queries `ProcessingSummaries` from Cosmos DB, generates a CSV report, writes it to a `lab-results-reports` blob container, and exits. It runs as a one-shot ACI batch job: triggered on demand, runs to completion, stops.
 
@@ -1176,40 +1176,9 @@ az container create --file container.yaml
        └─ restartPolicy: Never — container stops, billing ends
 ```
 
-### Multi-Stage Dockerfile
-
-The Dockerfile lives in `HealthDoc.ReportGenerator/` but requires the repo root as its build context because it copies both `HealthDoc.Models/` and `HealthDoc.ReportGenerator/`:
-
-```
-Stage 1 (dotnet/sdk:10.0)          Stage 2 (dotnet/runtime:10.0)
-  COPY HealthDoc.Models/             COPY published output
-  COPY HealthDoc.ReportGenerator/    ENTRYPOINT dotnet HealthDoc.ReportGenerator.dll
-  dotnet publish -c Release
-```
-
-The final image contains only the .NET runtime and the published binary, with no SDK. Build from the repo root:
-
-```bash
-docker build -f HealthDoc.ReportGenerator/Dockerfile -t healthdoc-report-generator:latest .
-```
-
-### Build and Test Locally
-
-```bash
-# From repo root
-docker build -f HealthDoc.ReportGenerator/Dockerfile -t healthdoc-report-generator:latest .
-
-docker run \
-  -e COSMOS_ENDPOINT=https://<account>.documents.azure.com:443/ \
-  -e STORAGE_ENDPOINT=https://<account>.blob.core.windows.net/ \
-  healthdoc-report-generator:latest
-```
-
-The container connects to real Azure resources using the credentials found by `DefaultAzureCredential`. For local runs, ensure `az login` has been run so the CLI credential is available inside the container, or pass `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` as env vars to use a service principal.
-
 ### Azure Container Registry
 
-ACR stores the image before ACI pulls it.
+Create the registry first — you need the ACR name to tag and push the image.
 
 ```bash
 az acr create \
@@ -1217,10 +1186,6 @@ az acr create \
   --resource-group <rg> \
   --sku Basic \
   --admin-enabled true
-
-az acr login --name acrHealthDocDev
-docker tag healthdoc-report-generator:latest acrHealthDocDev.azurecr.io/healthdoc-report-generator:latest
-docker push acrHealthDocDev.azurecr.io/healthdoc-report-generator:latest
 ```
 
 `--admin-enabled true` allows ACI to authenticate with a username and password. For production, assign the ACI managed identity the `AcrPull` RBAC role on the registry instead.
@@ -1233,7 +1198,40 @@ docker push acrHealthDocDev.azurecr.io/healthdoc-report-generator:latest
 | Standard | 100 GB | Yes | No | Most production |
 | Premium | 500 GB | Yes | Yes | Global, high-throughput |
 
-### Deploy to Azure Container Instances
+### Multi-Stage Dockerfile
+
+The Dockerfile lives in `HealthDoc.ReportGenerator/` but requires the repo root as its build context because it copies both `HealthDoc.Models/` and `HealthDoc.ReportGenerator/`:
+
+```
+Stage 1 (dotnet/sdk:10.0)          Stage 2 (dotnet/runtime:10.0)
+  COPY HealthDoc.Models/             COPY published output
+  COPY HealthDoc.ReportGenerator/    ENTRYPOINT dotnet HealthDoc.ReportGenerator.dll
+  dotnet publish -c Release
+```
+
+The final image contains only the .NET runtime and the published binary, with no SDK.
+
+### Build, Test Locally, and Push
+
+```bash
+# Build from the repo root
+docker build -f HealthDoc.ReportGenerator/Dockerfile -t healthdoc-report-generator:latest .
+
+# Test locally against real Azure resources (requires az login)
+docker run \
+  -e COSMOS_ENDPOINT=https://<account>.documents.azure.com:443/ \
+  -e STORAGE_ENDPOINT=https://<account>.blob.core.windows.net/ \
+  healthdoc-report-generator:latest
+
+# Tag and push to ACR
+az acr login --name acrHealthDocDev
+docker tag healthdoc-report-generator:latest acrHealthDocDev.azurecr.io/healthdoc-report-generator:latest
+docker push acrHealthDocDev.azurecr.io/healthdoc-report-generator:latest
+```
+
+The container connects to real Azure resources using the credentials found by `DefaultAzureCredential`. For local runs, ensure `az login` has been run so the CLI credential is available inside the container, or pass `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` as env vars to use a service principal.
+
+### Deploy to ACI
 
 Copy `HealthDoc.ReportGenerator/container.yaml.example` to `container.yaml` (gitignored), fill in your values, and deploy:
 
