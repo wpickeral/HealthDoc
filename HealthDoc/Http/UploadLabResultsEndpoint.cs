@@ -1,13 +1,14 @@
 using System.Net;
 using Azure.Storage.Blobs;
 using HealthDoc.Models;
+using HealthDoc.Pipeline;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.DurableTask;
 using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Functions;
+namespace HealthDoc.Http;
 
 public class UploadLabResultsEndpoint
 {

@@ -4,7 +4,7 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.DurableTask;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Functions;
+namespace HealthDoc.Pipeline;
 
 public class LabResultOrchestrator
 {

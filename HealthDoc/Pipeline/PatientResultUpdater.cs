@@ -3,7 +3,7 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 
-namespace HealthDoc.Activities;
+namespace HealthDoc.Pipeline;
 
 public class PatientResultUpdater
 {

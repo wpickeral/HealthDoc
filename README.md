@@ -161,31 +161,33 @@ HealthDoc/
 │   ├── Program.cs                              # DI — all SDK clients registered as singletons
 │   ├── AppConfig.cs                            # Centralized const strings for all services
 │   ├── host.json                               # Application Insights sampling config
-│   ├── Functions/
-│   │   ├── UploadLabResultsEndpoint.cs         # HTTP POST /api/upload → blob write + starts orchestration → instanceId
-│   │   ├── LabResultIngestionTrigger.cs        # BlobTrigger → schedules orchestration (inactive on Flex Consumption — see note below)
+│   ├── Http/                                   # HTTP triggers
+│   │   ├── UploadLabResultsEndpoint.cs         # POST /api/upload → blob write + starts orchestration → instanceId
+│   │   ├── BatchStatusEndpoint.cs              # GET /api/status/{instanceId} — async HTTP API
+│   │   ├── LabResultsEndpoint.cs               # GET /api/results/{clinicId} — Redis → Cosmos
+│   │   └── FailedLabFilesEndpoint.cs           # GET /api/blobs/failed → blob list + SAS URLs
+│   ├── Pipeline/                               # Orchestrator + activities (core processing)
 │   │   ├── LabResultOrchestrator.cs            # Orchestrator — all four Durable patterns
-│   │   ├── BatchStatusEndpoint.cs              # HTTP GET /api/status/{instanceId} — async HTTP API
-│   │   ├── LabResultsEndpoint.cs               # HTTP GET /api/results/{clinicId} — Redis → Cosmos
-│   │   ├── FailedLabFilesEndpoint.cs           # HTTP GET /api/blobs/failed → blob list + SAS URLs
-│   │   ├── DownstreamSystemNotifier.cs         # CosmosDBTrigger → App Insights telemetry
-│   │   ├── EventGridLabResultAuditor.cs        # EventGridTrigger (BlobCreated) → AuditLog
-│   │   ├── ServiceBusLabResultNotifier.cs      # ServiceBusTrigger → App Insights event
+│   │   ├── FileValidator.cs                    # ValidateFile — checks headers and data rows
+│   │   ├── FileParser.cs                       # ParseFile — CSV → List<LabRecord>
+│   │   ├── LabRecordProcessor.cs               # ProcessRecord — enriches one record
+│   │   ├── SummaryUpdater.cs                   # StoreSummary — Cosmos DB output binding
+│   │   ├── StorageConfirmationValidator.cs     # CheckStorageConfirmation — Cosmos SDK query
+│   │   ├── TimeoutSummaryWriter.cs             # WriteTimeoutSummary — persists timed-out status
+│   │   ├── MoveProcessedFile.cs                # MoveFile — server-side blob copy + delete
+│   │   └── PatientResultUpdater.cs             # StoreRecords — Cosmos write + Redis invalidation
+│   ├── ServiceBus/                             # Service Bus publishers and subscribers
+│   │   ├── BatchCompletePublisher.cs           # PublishBatchComplete — queue output binding
+│   │   ├── AbnormalAlertPublisher.cs           # PublishAbnormalAlert — topic output binding
+│   │   ├── ServiceBusLabResultNotifier.cs      # ServiceBusTrigger (queue) → App Insights event
 │   │   ├── ClinicalAlertHandler.cs             # ServiceBusTrigger (clinical-alerts sub) → App Insights event
 │   │   ├── CriticalAlertHandler.cs             # ServiceBusTrigger (critical-alerts sub, AbnormalCount > 5) → LogWarning
 │   │   └── ServiceBusDeadLetterMonitor.cs      # TimerTrigger → peeks DLQ every 5 minutes
-│   └── Activities/
-│       ├── FileValidator.cs                    # ValidateFile — checks headers and data rows
-│       ├── FileParser.cs                       # ParseFile — CSV → List<LabRecord>
-│       ├── LabRecordProcessor.cs               # ProcessRecord — enriches one record
-│       ├── SummaryUpdater.cs                   # StoreSummary — Cosmos DB output binding
-│       ├── StorageConfirmationValidator.cs     # CheckStorageConfirmation — Cosmos SDK query
-│       ├── TimeoutSummaryWriter.cs             # WriteTimeoutSummary — persists timed-out status
-│       ├── MoveProcessedFile.cs                # MoveFile — server-side blob copy + delete
-│       ├── PatientResultUpdater.cs             # StoreRecords — Cosmos write + Redis invalidation
-│       ├── BatchCompletePublisher.cs           # PublishBatchComplete — ServiceBus queue output
-│       ├── AbnormalAlertPublisher.cs           # PublishAbnormalAlert — ServiceBus topic output
-│       └── AbnormalResultEventPublisher.cs     # PublishAbnormalEvent — Event Grid custom event
+│   └── Events/                                 # Blob, EventGrid, and Cosmos triggers + Event Grid publisher
+│       ├── LabResultIngestionTrigger.cs        # BlobTrigger → schedules orchestration (inactive on Flex Consumption)
+│       ├── EventGridLabResultAuditor.cs        # EventGridTrigger (BlobCreated) → AuditLog
+│       ├── AbnormalResultEventPublisher.cs     # PublishAbnormalEvent — Event Grid custom event
+│       └── DownstreamSystemNotifier.cs         # CosmosDBTrigger → App Insights telemetry
 │
 ├── HealthDoc.Models/                           # Shared models — no Azure dependency
 │   ├── LabRecord.cs                            # CSV row + static From(string[]) factory
@@ -1657,7 +1659,7 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 ### Compute — Azure Functions
 
 - **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
-- **HTTP trigger** — `UploadLabResultsEndpoint.cs`, `BatchStatusEndpoint.cs`, `LabResultsEndpoint.cs`, `FailedLabFilesEndpoint.cs`
+- **HTTP trigger** — `Http/UploadLabResultsEndpoint.cs`, `Http/BatchStatusEndpoint.cs`, `Http/LabResultsEndpoint.cs`, `Http/FailedLabFilesEndpoint.cs`
 - **Blob trigger** — `LabResultIngestionTrigger.cs` (`BlobTrigger` on `lab-results-incoming/{name}`); note: Flex Consumption only supports EventGrid-based blob triggers — on this SKU the orchestration is started by the HTTP upload endpoint instead
 - **CosmosDB trigger** — `DownstreamSystemNotifier.cs` (fires on new documents in `ProcessingSummaries`)
 - **Timer trigger** — `ServiceBusDeadLetterMonitor.cs` (every 5 minutes)

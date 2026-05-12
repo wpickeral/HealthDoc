@@ -5,3 +5,5 @@ riderModule.iml
 /_ReSharper.Caches/
 HealthDoc/local.settings.json
 HealthDoc.ReportGenerator/container.yaml
+publish-output/
+deploy.zip

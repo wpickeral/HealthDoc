@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Threading.Tasks;
 using HealthDoc.Models;
@@ -6,7 +6,7 @@ using Microsoft.ApplicationInsights;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Activities;
+namespace HealthDoc.Pipeline;
 
 public class FileValidator
 {

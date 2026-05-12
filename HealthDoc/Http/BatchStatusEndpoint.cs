@@ -4,7 +4,7 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Functions;
+namespace HealthDoc.Http;
 
 public static class BatchStatusEndpoint
 {

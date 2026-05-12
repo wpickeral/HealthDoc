@@ -1,10 +1,11 @@
 using HealthDoc.Models;
+using HealthDoc.Pipeline;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.DurableTask;
 using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Functions;
+namespace HealthDoc.Events;
 
 public class LabResultIngestionTrigger
 {

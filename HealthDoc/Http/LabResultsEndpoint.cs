@@ -7,7 +7,7 @@ using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 
-namespace HealthDoc.Functions;
+namespace HealthDoc.Http;
 
 public class LabResultsEndpoint
 {

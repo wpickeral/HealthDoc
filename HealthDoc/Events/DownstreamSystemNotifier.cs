@@ -1,9 +1,9 @@
-﻿using HealthDoc.Models;
+using HealthDoc.Models;
 using Microsoft.ApplicationInsights;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Functions;
+namespace HealthDoc.Events;
 
 public class DownstreamSystemNotifier
 {
