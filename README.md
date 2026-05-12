@@ -1121,7 +1121,9 @@ Azure Cache for Redis defaults to `volatile-lru`. Since every key in this projec
 | Premium | Yes | Yes (up to 10 shards) | RDB + AOF | High-throughput production |
 | Enterprise | Yes | Yes | Yes + active geo-replication | Global, mission-critical |
 
-Copy the **Primary connection string** from **Access keys**. Add to `local.settings.json`:
+> **Microsoft Entra ID authentication is recommended over access keys.** Enabling access keys can lead to vulnerabilities if the key is leaked to source control or exposed publicly. In the portal, disable access key authentication under **Authentication** and enable **Microsoft Entra ID** — the cache instance then accepts token-based connections using Managed Identity, with no shared secret to manage or rotate.
+
+For this study project the connection string approach is used for simplicity. Copy the **Primary connection string** from **Access keys** and add to `local.settings.json`:
 
 ```json
 "RedisConnectionString": "<name>.redis.cache.windows.net:6380,password=<key>,ssl=True,abortConnect=False"
