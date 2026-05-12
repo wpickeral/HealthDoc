@@ -858,6 +858,22 @@ message.ApplicationProperties["AbnormalCount"] = summary.AbnormalCount;
 
 Service Bus evaluates the filter against `ApplicationProperties` at delivery time and routes the message to `critical-alerts` only when the value exceeds 5. `clinical-alerts` uses the default `$Default` (TrueFilter) and receives every message regardless.
 
+> **Correlation filters vs SQL filters**
+>
+> A correlation filter matches on a fixed set of well-known properties (`CorrelationId`, `MessageId`, `Subject`, `To`, and application properties) using exact string equality only — no expressions or operators. Service Bus evaluates them via an optimised hash lookup rather than expression parsing, making them significantly faster at high message volumes. Microsoft recommends using correlation filters wherever possible.
+>
+> A good use case for correlation over SQL is routing by clinic — set `CorrelationId` to the clinic ID on the message and create one correlation filter per subscription:
+> ```csharp
+> message.CorrelationId = summary.ClinicId; // set by the sender
+> ```
+> ```
+> Subscription: clinic-001  →  CorrelationId = 'CLINIC_001'
+> Subscription: clinic-002  →  CorrelationId = 'CLINIC_002'
+> ```
+> Each subscription receives only its own messages with no expression evaluation.
+>
+> **Rule of thumb:** use a correlation filter for known, fixed equality matches. Use SQL when you need an expression (`>`, `<`, `LIKE`, `IN`, compound `AND`/`OR`). In this project `AbnormalCount > 5` requires SQL; if the filter were `ClinicId = 'CLINIC_001'`, a correlation filter would be the better choice.
+
 ### Peek-Lock vs Receive-and-Delete
 
 `[ServiceBusTrigger]` uses **peek-lock** by default:
