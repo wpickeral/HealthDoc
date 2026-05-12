@@ -42,7 +42,7 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 | **Managed Identity** | Function App authenticates to Cosmos, Storage, and Key Vault without connection strings | System-assigned identity, DefaultAzureCredential, RBAC |
 | **Azure Service Bus** | Delivers batch-complete notifications (queue) and abnormal-result alerts (topic with subscriptions) | Queues, topics, subscriptions, DLQ, peek-lock |
 | **Azure Event Grid** | Push-based fan-out: blob created audit events (system) and abnormal result detected events (custom) | System events, custom events, CloudEvents, subscription filters |
-| **Azure Cache for Redis** | Cache-aside on lab results queries; write-invalidation on new record writes | Cache-aside pattern, TTL, eviction, IConnectionMultiplexer |
+| **Azure Managed Redis** | Cache-aside on lab results queries; write-invalidation on new record writes | Cache-aside pattern, TTL, eviction, IConnectionMultiplexer |
 | **Application Insights** | Telemetry collection with sampling; custom business events and pipeline metrics | Monitoring, custom events, structured logging |
 | **MSAL (React SPA)** | Internal dashboard authenticates via authorization code + PKCE; silent token renewal | MSAL auth flows, token acquisition, cache strategy |
 | **Azure Container Registry** | Stores the report generator Docker image; pulled by ACI on demand | Registry tiers, image push/pull, admin credentials vs RBAC |
@@ -1031,6 +1031,8 @@ To verify events are being delivered, add a test subscription on the topic: **+ 
 
 ## Azure Cache for Redis
 
+> **Retirement notice:** Azure Cache for Redis is being replaced by **Azure Managed Redis**. New instance creation will be blocked from **October 1, 2026**, and existing instances will be retired on **September 30, 2028**. Microsoft recommends Azure Managed Redis for all new deployments — it offers higher performance at lower cost. The concepts covered here (cache-aside, TTL, eviction, `IConnectionMultiplexer`) apply equally to Azure Managed Redis.
+
 ### Cache-Aside in the Application Layer
 
 The APIM `cache-lookup`/`cache-store` policies are present but have no effect on the Consumption tier without an external cache linked. Redis provides real cache-aside behaviour directly in application code and is the dedicated AZ-204 caching topic.
@@ -1106,20 +1108,20 @@ This project uses the **string** type (any byte sequence, including JSON). Other
 | `volatile-lru` | Evicts LRU keys that have a TTL (leaves TTL-less keys) |
 | `allkeys-lfu` | Evicts least-frequently-used |
 
-Azure Cache for Redis defaults to `volatile-lru`. Since every key in this project has a TTL, `volatile-lru` and `allkeys-lru` behave identically here.
+Azure Managed Redis defaults to `volatile-lru`. Since every key in this project has a TTL, `volatile-lru` and `allkeys-lru` behave identically here.
 
 ### Portal Setup
 
-**Create Azure Cache for Redis** (`redis-healthdoc-dev`, **Basic C0**: 250 MB, cheapest tier, no SLA, ideal for study).
+**Create Azure Managed Redis** (`redis-healthdoc-dev`). In the portal, search **Azure Managed Redis** and select the **Flash F0** tier (cheapest, ideal for study).
 
 **SKU comparison:**
 
 | Tier | Replication | Clustering | Persistence | Best for |
 |---|---|---|---|---|
-| Basic | No | No | No | Dev/test |
-| Standard | Yes | No | No | Production |
-| Premium | Yes | Yes (up to 10 shards) | RDB + AOF | High-throughput production |
-| Enterprise | Yes | Yes | Yes + active geo-replication | Global, mission-critical |
+| Flash F0 / F1 | No | No | No | Dev/test |
+| Balanced B0–B10 | Yes | No | Yes | General production |
+| Memory Optimized M10–M90 | Yes | Yes | Yes | Memory-intensive workloads |
+| Compute Optimized X3–X20 | Yes | Yes | Yes | High-throughput production |
 
 > **Microsoft Entra ID authentication is recommended over access keys.** Enabling access keys can lead to vulnerabilities if the key is leaked to source control or exposed publicly. In the portal, disable access key authentication under **Authentication** and enable **Microsoft Entra ID** — the cache instance then accepts token-based connections using Managed Identity, with no shared secret to manage or rotate.
 
