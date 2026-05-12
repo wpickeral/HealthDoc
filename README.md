@@ -18,14 +18,15 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 4. [The Pipeline](#the-pipeline)
 5. [Durable Functions Patterns](#durable-functions-patterns)
 6. [Local Development](#local-development)
-7. [Azure API Management](#azure-api-management)
-8. [Authentication & Security](#authentication--security)
-9. [Azure Service Bus](#azure-service-bus)
-10. [Azure Event Grid](#azure-event-grid)
-11. [Azure Managed Redis](#azure-managed-redis)
-12. [Azure Container Instances](#azure-container-instances)
-13. [End-to-End Testing](#end-to-end-testing)
-14. [AZ-204 Coverage Map](#az-204-coverage-map)
+7. [Azure Cosmos DB](#azure-cosmos-db)
+8. [Azure API Management](#azure-api-management)
+9. [Authentication & Security](#authentication--security)
+10. [Azure Service Bus](#azure-service-bus)
+11. [Azure Event Grid](#azure-event-grid)
+12. [Azure Managed Redis](#azure-managed-redis)
+13. [Azure Container Instances](#azure-container-instances)
+14. [End-to-End Testing](#end-to-end-testing)
+15. [AZ-204 Coverage Map](#az-204-coverage-map)
 
 ---
 
@@ -463,6 +464,44 @@ dotnet test HealthDoc.Tests/HealthDoc.Tests.csproj
 10 tests across two classes:
 - `LabRecordTests` — `From` maps all CSV columns; `From` trims whitespace
 - `ProcessedRecordTests` — base field mapping, composite ID format, `IsAbnormal` boundary cases (in-range, at boundary, below min, above max), `ProcessedAt` timestamp precision
+
+---
+
+## Azure Cosmos DB
+
+Cosmos DB is the primary data store for the pipeline. Three containers live inside a single `LabResults` database, each with a partition key chosen to make the most common query a single-partition operation.
+
+### Portal Setup
+
+**Create the Cosmos DB account** — Portal → **Create a resource** → search **Azure Cosmos DB** → select **Azure Cosmos DB for NoSQL**:
+
+| Field | Value |
+|---|---|
+| Account name | `health-doc-database-account` (globally unique) |
+| Region | Same as your Function App |
+| Capacity mode | **Serverless** |
+
+Serverless is ideal for a study project — you pay per request unit consumed with no minimum, and there is no hourly charge when idle.
+
+**AZ-204 capacity mode comparison:**
+
+| Mode | Best for | Billing |
+|---|---|---|
+| **Serverless** | Sporadic or unpredictable traffic, dev/test | Per RU consumed |
+| **Provisioned throughput** | Steady, predictable workloads | Per RU/s provisioned (whether used or not) |
+| **Autoscale** | Variable workloads with a known ceiling | Scales between 10% and 100% of max RU/s |
+
+**Create the database and containers** — once the account is provisioned, open **Data Explorer** → **New Container**:
+
+| Container | Database | Partition key | Notes |
+|---|---|---|---|
+| `ProcessingSummaries` | `LabResults` (create new) | `/id` | Each summary is looked up by its own ID |
+| `LabResultRecords` | `LabResults` (use existing) | `/ClinicId` | Queries filter by clinic — all records for one clinic stay in one partition |
+| `AuditLog` | `LabResults` (use existing) | `/ClinicId` | Written by `EventGridLabResultAuditor` on every blob upload |
+
+> **Partition key design:** `/ClinicId` on `LabResultRecords` means `SELECT * WHERE ClinicId = 'X'` is a single-partition query with no cross-partition fan-out. `/id` on `ProcessingSummaries` distributes summaries evenly — they are always looked up by their own ID, so no partition affinity is needed.
+
+**RBAC:** The Function App's managed identity needs the `Cosmos DB Built-in Data Contributor` data plane role to read and write documents. This is covered in [Authentication & Security](#authentication--security) — the role must be assigned via CLI and does not appear in the portal IAM blade.
 
 ---
 
