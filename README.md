@@ -1217,19 +1217,34 @@ The final image contains only the .NET runtime and the published binary, with no
 # Build from the repo root
 docker build -f HealthDoc.ReportGenerator/Dockerfile -t healthdoc-report-generator:latest .
 
-# Test locally against real Azure resources (requires az login)
-docker run \
-  -e COSMOS_ENDPOINT=https://<account>.documents.azure.com:443/ \
-  -e STORAGE_ENDPOINT=https://<account>.blob.core.windows.net/ \
-  healthdoc-report-generator:latest
-
 # Tag and push to ACR
 az acr login --name acrhealthdocdev
 docker tag healthdoc-report-generator:latest acrhealthdocdev.azurecr.io/healthdoc-report-generator:latest
 docker push acrhealthdocdev.azurecr.io/healthdoc-report-generator:latest
 ```
 
-The container connects to real Azure resources using the credentials found by `DefaultAzureCredential`. For local runs, ensure `az login` has been run so the CLI credential is available inside the container, or pass `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` as env vars to use a service principal.
+**Testing locally without Docker** — the simplest approach. Runs on the host where `az login` credentials are available:
+
+```bash
+cd HealthDoc.ReportGenerator
+COSMOS_ENDPOINT=https://<account>.documents.azure.com:443/ \
+STORAGE_ENDPOINT=https://<account>.blob.core.windows.net/ \
+dotnet run
+```
+
+**Testing the Docker image locally** — the container is isolated from the host's `az login` session. Pass a service principal via environment variables so `EnvironmentCredential` (first in the `DefaultAzureCredential` chain) can authenticate:
+
+```bash
+docker run \
+  -e COSMOS_ENDPOINT=https://<account>.documents.azure.com:443/ \
+  -e STORAGE_ENDPOINT=https://<account>.blob.core.windows.net/ \
+  -e AZURE_CLIENT_ID=<sp-client-id> \
+  -e AZURE_CLIENT_SECRET=<sp-client-secret> \
+  -e AZURE_TENANT_ID=<tenant-id> \
+  healthdoc-report-generator:latest
+```
+
+In Azure, ACI injects Managed Identity credentials automatically — no environment variables needed.
 
 ### Deploy to ACI
 
