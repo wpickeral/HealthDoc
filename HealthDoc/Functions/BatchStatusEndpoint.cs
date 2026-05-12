@@ -24,12 +24,15 @@ public static class BatchStatusEndpoint
     {
         var status = await client.GetInstanceAsync(instanceId);
 
-        return status?.RuntimeStatus switch
+        if (status is null)
+            return new NotFoundResult();
+
+        return status.RuntimeStatus switch
         {
             OrchestrationRuntimeStatus.Completed => new OkObjectResult(status.SerializedOutput),
             OrchestrationRuntimeStatus.Failed => new ObjectResult(status.SerializedOutput) { StatusCode = 500 },
             OrchestrationRuntimeStatus.Terminated => new ObjectResult("Terminated") { StatusCode = 500 },
-            _ => new AcceptedResult() // Still running — client should poll again
+            _ => new AcceptedResult()
         };
     }
 }

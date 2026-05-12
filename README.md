@@ -55,7 +55,7 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 
 ### Ingestion Pipeline
 
-When a partner clinic uploads a CSV, the file flows through APIM into an automated processing pipeline. Two independent triggers fire on the same blob write: the BlobTrigger starts the Durable orchestration; the EventGrid trigger writes an audit record. The orchestrator runs validation, parsing, parallel record processing, persistence, and downstream notification as a durable, replay-safe workflow.
+When a partner clinic uploads a CSV, the file flows through APIM into an automated processing pipeline. The upload endpoint writes the blob and starts the Durable orchestration directly. The EventGrid trigger independently receives the `BlobCreated` event from the same write and records an audit log — neither path knows about the other. The orchestrator runs validation, parsing, parallel record processing, persistence, and downstream notification as a durable, replay-safe workflow.
 
 ```
 Partner Clinic  ──── POST /labs/upload ────► Azure API Management
@@ -65,17 +65,15 @@ Partner Clinic  ──── POST /labs/upload ────► Azure API Managem
                                                         ▼
                                              UploadLabResultsEndpoint
                                              (generates unique filename,
-                                              writes blob to lab-results-incoming)
+                                              writes blob to lab-results-incoming,
+                                              starts orchestration directly)
                                                         │
                                                ┌────────┴────────┐
-                                               │ blob write       │ blob write
-                                               ▼                  ▼
-                              LabResultIngestionTrigger     EventGridLabResultAuditor
-                              (BlobTrigger)                 (EventGridTrigger — BlobCreated)
-                                    │                       writes AuditLog → Cosmos DB
-                                    │ StartOrchestration
-                                    ▼
-                           LabResultOrchestrator
+                                               │ StartOrchestration  │ blob write
+                                               ▼                     ▼
+                                      LabResultOrchestrator    EventGridLabResultAuditor
+                                                               (EventGridTrigger — BlobCreated)
+                                                               writes AuditLog → Cosmos DB
                                     │
                  ┌──────────────────┤  Function Chaining
                  ▼                  ▼
@@ -163,8 +161,8 @@ HealthDoc/
 │   ├── AppConfig.cs                            # Centralized const strings for all services
 │   ├── host.json                               # Application Insights sampling config
 │   ├── Functions/
-│   │   ├── UploadLabResultsEndpoint.cs         # HTTP POST /api/upload → blob write → instanceId
-│   │   ├── LabResultIngestionTrigger.cs        # BlobTrigger → schedules orchestration
+│   │   ├── UploadLabResultsEndpoint.cs         # HTTP POST /api/upload → blob write + starts orchestration → instanceId
+│   │   ├── LabResultIngestionTrigger.cs        # BlobTrigger → schedules orchestration (inactive on Flex Consumption — see note below)
 │   │   ├── LabResultOrchestrator.cs            # Orchestrator — all four Durable patterns
 │   │   ├── BatchStatusEndpoint.cs              # HTTP GET /api/status/{instanceId} — async HTTP API
 │   │   ├── LabResultsEndpoint.cs               # HTTP GET /api/results/{clinicId} — Redis → Cosmos
@@ -235,7 +233,9 @@ A single CSV upload flows through these steps end-to-end:
 
 1. **Upload**: A partner clinic POSTs a CSV body to `POST /labs/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes it to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client holds this ID to poll status later.
 
-2. **Orchestration trigger**: `LabResultIngestionTrigger` (BlobTrigger) fires when the blob lands and schedules a `LabResultOrchestrator` instance, using the filename as the deterministic instance ID. If a duplicate upload arrives while an instance is still running it is skipped; if the prior instance reached a terminal state it is purged first.
+2. **Orchestration trigger**: `UploadLabResultsEndpoint` starts the orchestration directly after writing the blob, passing the file content and generated filename as a `FilePayload`. The filename is the deterministic instance ID, so the caller can begin polling immediately.
+
+   > **Note — `LabResultIngestionTrigger`:** The project also contains a `BlobTrigger`-based function (`LabResultIngestionTrigger.cs`) originally designed as the orchestration entry point. The **Flex Consumption SKU** does not support the polling-based `BlobTrigger`; it requires an EventGrid-based blob trigger instead. Rather than setting up an EventGrid event subscription for the blob container, the orchestration start was consolidated into the HTTP upload endpoint. `LabResultIngestionTrigger` remains in the project as a reference and could be activated on a Consumption, Premium, or Dedicated plan, or by migrating it to use `Source = BlobTriggerSource.EventGrid` on Flex Consumption.
 
 3. **Audit trigger**: `EventGridLabResultAuditor` (EventGridTrigger) independently receives the `Microsoft.Storage.BlobCreated` system event for the same upload and writes a `LabAuditRecord` to the `AuditLog` Cosmos container. Neither trigger knows about the other; the audit trail is fully decoupled from the processing pipeline.
 
@@ -259,7 +259,7 @@ A single CSV upload flows through these steps end-to-end:
 
 | Model | Produced by | Consumed by | Key fields |
 |---|---|---|---|
-| `FilePayload` | `LabResultIngestionTrigger` | `LabResultOrchestrator` | `FileName`, `Content` |
+| `FilePayload` | `UploadLabResultsEndpoint` | `LabResultOrchestrator` | `FileName`, `Content` |
 | `FileArchiveRequest` | Orchestrator | `MoveFile` | `FileName`, `TargetContainer`, `Reason` |
 | `ValidationResult` | `ValidateFile` | Orchestrator (gate) | `IsValid`, `Errors` |
 | `LabRecord` | `ParseFile` (via `From`) | `ProcessRecord` | `Result`, `ReferenceRange`, `CollectedAt` |
@@ -330,9 +330,10 @@ On timeout, the final Cosmos write is delegated to the `WriteTimeoutSummary` act
 | `Completed` | `200 OK` + serialized output | Pipeline finished |
 | `Failed` | `500` + serialized output | Orchestrator threw an exception |
 | `Terminated` | `500 Terminated` | Instance was forcibly stopped |
+| Not found (`null`) | `404 Not Found` | Unknown instance ID |
 | Any other | `202 Accepted` | Still running — poll again |
 
-The `202 Accepted` response is the key exam detail: it signals the client to keep polling the same URL.
+The `202 Accepted` response is the key exam detail: it signals the client to keep polling the same URL. Returning `404` for an unknown instance ID is important — without this guard, a missing orchestration is indistinguishable from one that is still running, causing the client to poll forever.
 
 **Exam concept:** `[DurableClient]` binding, `GetInstanceAsync`, HTTP polling consumer, `OrchestrationRuntimeStatus` values.
 
@@ -1611,7 +1612,7 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 
 - **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
 - **HTTP trigger** — `UploadLabResultsEndpoint.cs`, `BatchStatusEndpoint.cs`, `LabResultsEndpoint.cs`, `FailedLabFilesEndpoint.cs`
-- **Blob trigger** — `LabResultIngestionTrigger.cs` (`BlobTrigger` on `lab-results-incoming/{name}`)
+- **Blob trigger** — `LabResultIngestionTrigger.cs` (`BlobTrigger` on `lab-results-incoming/{name}`); note: Flex Consumption only supports EventGrid-based blob triggers — on this SKU the orchestration is started by the HTTP upload endpoint instead
 - **CosmosDB trigger** — `DownstreamSystemNotifier.cs` (fires on new documents in `ProcessingSummaries`)
 - **Timer trigger** — `ServiceBusDeadLetterMonitor.cs` (every 5 minutes)
 - **EventGrid trigger** — `EventGridLabResultAuditor.cs` (receives `BlobCreated` system events)

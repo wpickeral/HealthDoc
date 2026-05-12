@@ -1,7 +1,10 @@
 using System.Net;
 using Azure.Storage.Blobs;
+using HealthDoc.Models;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
+using Microsoft.DurableTask;
+using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 
 namespace HealthDoc.Functions;
@@ -20,20 +23,27 @@ public class UploadLabResultsEndpoint
     [Function(nameof(UploadLabResultsEndpoint))]
     public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "upload")]
-        HttpRequestData req)
+        HttpRequestData req,
+        [DurableClient] DurableTaskClient client)
     {
         var fileName = $"lab-results-{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}.csv";
 
         _logger.LogInformation("Receiving lab results upload — assigning filename {FileName}", fileName);
 
+        var content = await new StreamReader(req.Body).ReadToEndAsync();
+
         var blob = _blobServiceClient
             .GetBlobContainerClient(AppConfig.Blob.IncomingContainer)
             .GetBlobClient(fileName);
 
-        await blob.UploadAsync(req.Body, overwrite: false);
+        await blob.UploadAsync(BinaryData.FromString(content), overwrite: false);
 
-        _logger.LogInformation("Blob written to {Container}/{FileName} — pipeline will trigger automatically",
+        _logger.LogInformation("Blob written to {Container}/{FileName} — starting orchestration",
             AppConfig.Blob.IncomingContainer, fileName);
+
+        var payload = new FilePayload { FileName = fileName, Content = content };
+        var options = new StartOrchestrationOptions { InstanceId = fileName };
+        await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload, options);
 
         var response = req.CreateResponse(HttpStatusCode.Created);
         await response.WriteAsJsonAsync(new { instanceId = fileName });
