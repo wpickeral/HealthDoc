@@ -845,6 +845,19 @@ Topic (lab-results-alerts)
 
 **AZ-204 exam rule:** Use a queue when exactly one consumer should process each message. Use a topic when multiple independent consumers each need their own copy, optionally filtered by content.
 
+### SQL Filters
+
+SQL filters evaluate **message application properties** (headers set by the sender), not the message body. This is an important distinction: if `AbnormalCount` were only in the JSON body, the filter `AbnormalCount > 5` would never match because Service Bus cannot inspect the body.
+
+`AbnormalAlertPublisher` sets the property explicitly alongside the JSON body:
+
+```csharp
+var message = new ServiceBusMessage(BinaryData.FromObjectAsJson(payload));
+message.ApplicationProperties["AbnormalCount"] = summary.AbnormalCount;
+```
+
+Service Bus evaluates the filter against `ApplicationProperties` at delivery time and routes the message to `critical-alerts` only when the value exceeds 5. `clinical-alerts` uses the default `$Default` (TrueFilter) and receives every message regardless.
+
 ### Peek-Lock vs Receive-and-Delete
 
 `[ServiceBusTrigger]` uses **peek-lock** by default:
