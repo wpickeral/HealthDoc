@@ -33,7 +33,7 @@ public class ServiceBusLabResultNotifier
             Connection = AppConfig.ServiceBus.Connection)]
         BatchCompletedMessage message)
     {
-        _telemetryClient.TrackEvent(AppConfig.Events.LabResultsBatchComplete, new Dictionary<string, string>
+        _telemetryClient.TrackEvent(AppConfig.Analytics.CustomEvents.LabResultsBatchComplete, new Dictionary<string, string>
         {
             ["BatchId"]       = message.BatchId,
             ["ClinicId"]      = message.ClinicId,

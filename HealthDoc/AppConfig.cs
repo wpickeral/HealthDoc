@@ -82,12 +82,15 @@ public static class AppConfig
         }
     }
 
-    public static class Events
+    public static class Analytics
     {
-        public const string LabResultsProcessed    = "LabResultsProcessed";
-        public const string FileValidationFailed   = "FileValidationFailed";
-        public const string LabResultsBatchComplete = "LabResultsBatchComplete";
-        public const string ClinicalAlertReceived  = "ClinicalAlertReceived";
-        public const string CriticalAlertReceived  = "CriticalAlertReceived";
+        public static class CustomEvents
+        {
+            public const string LabResultsProcessed    = "LabResultsProcessed";
+            public const string FileValidationFailed   = "FileValidationFailed";
+            public const string LabResultsBatchComplete = "LabResultsBatchComplete";
+            public const string ClinicalAlertReceived  = "ClinicalAlertReceived";
+            public const string CriticalAlertReceived  = "CriticalAlertReceived";
+        }
     }
 }
