@@ -25,7 +25,7 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 11. [Azure Managed Redis](#azure-managed-redis)
 12. [Container Deployment](#container-deployment)
 13. [End-to-End Testing](#end-to-end-testing)
-14. [AZ-204 Concepts Checklist](#az-204-concepts-checklist)
+14. [AZ-204 Coverage Map](#az-204-coverage-map)
 
 ---
 
@@ -1505,103 +1505,112 @@ Verify the CSV appeared in **Storage Account → Containers → reports**.
 
 ---
 
-## AZ-204 Concepts Checklist
+## AZ-204 Coverage Map
+
+This project covers a significant portion of the AZ-204 exam domains. Each item links to the file where the concept is implemented.
 
 ### Compute — Azure Functions
 
-- [ ] **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
-- [ ] **HTTP trigger** — `UploadLabResultsEndpoint.cs`, `BatchStatusEndpoint.cs`, `LabResultsEndpoint.cs`, `FailedLabFilesEndpoint.cs`
-- [ ] **Blob trigger** — `LabResultIngestionTrigger.cs` (`BlobTrigger` on `lab-results-incoming/{name}`)
-- [ ] **CosmosDB trigger** — `DownstreamSystemNotifier.cs` (fires on new documents in `ProcessingSummaries`)
-- [ ] **Timer trigger** — `ServiceBusDeadLetterMonitor.cs` (every 5 minutes)
-- [ ] **EventGrid trigger** — `EventGridLabResultAuditor.cs` (receives `BlobCreated` system events)
-- [ ] **ServiceBus trigger** — `ServiceBusLabResultNotifier.cs` (consumes `lab-results-notifications` queue)
-- [ ] **Activity functions** — 11 activities, each decorated with `[Function]` + `[ActivityTrigger]`
-- [ ] **Durable orchestrator** — `LabResultOrchestrator.cs` (`[OrchestrationTrigger]`, deterministic replay)
-- [ ] **Function chaining** — sequential `ValidateFile → ParseFile → StoreSummary` with early exit
-- [ ] **Fan-out / Fan-in** — parallel `ProcessRecord` × N, `Task.WhenAll` fan-in
-- [ ] **Monitor pattern** — `context.CreateTimer()` polling loop (durable, replay-safe)
-- [ ] **Async HTTP API** — `BatchStatusEndpoint.cs`, `[DurableClient]`, `202 Accepted` polling response
-- [ ] **CosmosDB output binding** — `SummaryUpdater.cs`, `TimeoutSummaryWriter.cs`, `StorageConfirmationValidator.cs`, `PatientResultUpdater.cs`
-- [ ] **ServiceBus output binding** — `BatchCompletePublisher.cs` (queue), `AbnormalAlertPublisher.cs` (topic)
-- [ ] **CosmosDB output binding on EventGrid trigger** — `EventGridLabResultAuditor.cs` writes `LabAuditRecord`
-- [ ] **Dependency injection** — all SDK clients registered as singletons in `Program.cs`
-- [ ] **Centralized configuration** — `AppConfig.cs` (`const` strings for C# attribute parameters; nested classes per service)
-- [ ] **Structured logging** — `ILogger<T>` throughout; cache hit/miss, DLQ findings, pipeline milestones
-- [ ] **Application Insights** — sampling in `host.json`; `TelemetryClient` custom events and metrics; pipeline duration metric with dimensions
+- **Isolated worker model** — `Program.cs`, `HealthDoc.csproj` (`dotnet-isolated` runtime)
+- **HTTP trigger** — `UploadLabResultsEndpoint.cs`, `BatchStatusEndpoint.cs`, `LabResultsEndpoint.cs`, `FailedLabFilesEndpoint.cs`
+- **Blob trigger** — `LabResultIngestionTrigger.cs` (`BlobTrigger` on `lab-results-incoming/{name}`)
+- **CosmosDB trigger** — `DownstreamSystemNotifier.cs` (fires on new documents in `ProcessingSummaries`)
+- **Timer trigger** — `ServiceBusDeadLetterMonitor.cs` (every 5 minutes)
+- **EventGrid trigger** — `EventGridLabResultAuditor.cs` (receives `BlobCreated` system events)
+- **ServiceBus trigger** — `ServiceBusLabResultNotifier.cs` (consumes `lab-results-notifications` queue)
+- **Activity functions** — 11 activities, each decorated with `[Function]` + `[ActivityTrigger]`
+- **Durable orchestrator** — `LabResultOrchestrator.cs` (`[OrchestrationTrigger]`, deterministic replay)
+- **Function chaining** — sequential `ValidateFile → ParseFile → StoreSummary` with early exit
+- **Fan-out / Fan-in** — parallel `ProcessRecord` × N, `Task.WhenAll` fan-in
+- **Monitor pattern** — `context.CreateTimer()` polling loop (durable, replay-safe)
+- **Async HTTP API** — `BatchStatusEndpoint.cs`, `[DurableClient]`, `202 Accepted` polling response
+- **CosmosDB output binding** — `SummaryUpdater.cs`, `TimeoutSummaryWriter.cs`, `StorageConfirmationValidator.cs`, `PatientResultUpdater.cs`
+- **ServiceBus output binding** — `BatchCompletePublisher.cs` (queue), `AbnormalAlertPublisher.cs` (topic)
+- **CosmosDB output binding on EventGrid trigger** — `EventGridLabResultAuditor.cs` writes `LabAuditRecord`
+- **Dependency injection** — all SDK clients registered as singletons in `Program.cs`
+- **Centralized configuration** — `AppConfig.cs` (`const` strings for C# attribute parameters; nested classes per service)
+- **Structured logging** — `ILogger<T>` throughout; cache hit/miss, DLQ findings, pipeline milestones
+- **Application Insights** — sampling in `host.json`; `TelemetryClient` custom events and metrics; pipeline duration metric with dimensions
 
 ### Storage
 
-- [ ] **Blob containers** — `lab-results-incoming`, `lab-results-processed`, `lab-results-failed`
-- [ ] **Server-side blob copy** — `MoveProcessedFile.cs` (`StartCopyFromUriAsync` + delete source)
-- [ ] **SAS token generation** — `FailedLabFilesEndpoint.cs` (`BlobClient.GenerateSasUri`, 1-hour read-only)
-- [ ] **Cosmos DB partition key design** — `LabResultRecords` uses `/ClinicId` (single-partition queries by clinic); `ProcessingSummaries` uses `/id`
-- [ ] **Cosmos DB SDK query** — `StorageConfirmationValidator.cs` (`ReadItemAsync`, `CosmosException` not-found handling)
-- [ ] **Cosmos DB output binding** — declarative writes via `[CosmosDBOutput]` attribute; no SDK call needed
+- **Blob containers** — `lab-results-incoming`, `lab-results-processed`, `lab-results-failed`
+- **Server-side blob copy** — `MoveProcessedFile.cs` (`StartCopyFromUriAsync` + delete source)
+- **SAS token generation** — `FailedLabFilesEndpoint.cs` (`BlobClient.GenerateSasUri`, 1-hour read-only)
+- **Cosmos DB partition key design** — `LabResultRecords` uses `/ClinicId` (single-partition queries by clinic); `ProcessingSummaries` uses `/id`
+- **Cosmos DB SDK query** — `StorageConfirmationValidator.cs` (`ReadItemAsync`, `CosmosException` not-found handling)
+- **Cosmos DB output binding** — declarative writes via `[CosmosDBOutput]` attribute; no SDK call needed
 
 ### Security
 
-- [ ] **Azure AD app registration** — `HealthDoc-API` exposes `LabResults.Read` scope; `HealthDoc-Dashboard` consumes it
-- [ ] **MSAL — authorization code + PKCE** — `HealthDoc.Dashboard` (`@azure/msal-react`, silent acquisition, popup fallback)
-- [ ] **APIM validate-jwt** — product-level policy on Internal Dashboard; `openid-config` from Azure AD OIDC endpoint
-- [ ] **APIM policy execution order** — Product → API → Operation stacking; why validate-jwt lives at product level
-- [ ] **Subscription keys vs JWT** — system identity vs person identity; when to use each
-- [ ] **SAS tokens** — time-limited, scope-limited blob access without sharing account keys
-- [ ] **Azure Key Vault secrets** — `CosmosDBConnectionString` and `StorageConnectionString` stored as secrets
-- [ ] **Key Vault references in App Settings** — `@Microsoft.KeyVault(VaultName=...;SecretName=...)` resolved transparently by the runtime
-- [ ] **Key Vault soft-delete and purge protection** — accidental deletion safeguards
-- [ ] **RBAC vs access policies** — RBAC is the modern approach; access policies are vault-level and legacy
-- [ ] **System-assigned Managed Identity** — enabled on Function App; tied to the resource lifecycle
-- [ ] **System-assigned vs user-assigned** — system-assigned per-resource; user-assigned independent and shareable
-- [ ] **DefaultAzureCredential** — `az login` locally → Managed Identity in Azure; no code change between environments
-- [ ] **Passwordless SDK clients** — `CosmosClient(endpoint, credential)`, `BlobServiceClient(uri, credential)`
-- [ ] **RBAC role assignments** — `Key Vault Secrets User`, `Cosmos DB Built-in Data Contributor`, `Storage Blob Data Contributor`, `EventGrid Data Sender`
+- **Azure AD app registration** — `HealthDoc-API` exposes `LabResults.Read` scope; `HealthDoc-Dashboard` consumes it
+- **MSAL — authorization code + PKCE** — `HealthDoc.Dashboard` (`@azure/msal-react`, silent acquisition, popup fallback)
+- **APIM validate-jwt** — product-level policy on Internal Dashboard; `openid-config` from Azure AD OIDC endpoint
+- **APIM policy execution order** — Product → API → Operation stacking; why validate-jwt lives at product level
+- **Subscription keys vs JWT** — system identity vs person identity; when to use each
+- **SAS tokens** — time-limited, scope-limited blob access without sharing account keys
+- **Azure Key Vault secrets** — `CosmosDBConnectionString` and `StorageConnectionString` stored as secrets
+- **Key Vault references in App Settings** — `@Microsoft.KeyVault(VaultName=...;SecretName=...)` resolved transparently by the runtime
+- **Key Vault soft-delete and purge protection** — accidental deletion safeguards
+- **RBAC vs access policies** — RBAC is the modern approach; access policies are vault-level and legacy
+- **System-assigned Managed Identity** — enabled on Function App; tied to the resource lifecycle
+- **System-assigned vs user-assigned** — system-assigned per-resource; user-assigned independent and shareable
+- **DefaultAzureCredential** — `az login` locally → Managed Identity in Azure; no code change between environments
+- **Passwordless SDK clients** — `CosmosClient(endpoint, credential)`, `BlobServiceClient(uri, credential)`
+- **RBAC role assignments** — `Key Vault Secrets User`, `Cosmos DB Built-in Data Contributor`, `Storage Blob Data Contributor`, `EventGrid Data Sender`
 
 ### Monitor & Optimize
 
-- [ ] **Application Insights sampling** — `host.json` sampling config; `excludedTypes: Request` keeps request telemetry unsampled
-- [ ] **Custom events** — `TelemetryClient.TrackEvent` in `DownstreamSystemNotifier.cs` and `ServiceBusLabResultNotifier.cs`
-- [ ] **Custom metrics** — `TelemetryClient.TrackMetric` for pipeline duration with `FileName`, `BatchId`, `Status` dimensions
-- [ ] **Cache-aside pattern** — `LabResultsEndpoint.cs`: Redis check → Cosmos fallback → cache store; `PatientResultUpdater.cs`: write-invalidate
-- [ ] **IConnectionMultiplexer singleton** — connection pool reuse; one instance per application lifetime
-- [ ] **Redis TTL** — 60s per key via `StringSetAsync(key, value, TimeSpan)`
-- [ ] **Redis eviction policies** — `volatile-lru` default; `allkeys-lru`, `allkeys-lfu`, `noeviction` variants
-- [ ] **Azure Managed Redis SKU tiers** — Memory Optimized (high throughput), Balanced (general purpose), Compute Optimized (CPU-intensive), Flash Optimized (large datasets, cost-sensitive)
-- [ ] **APIM external cache** — links Redis to APIM so `cache-lookup`/`cache-store` policies work on Consumption tier
+- **Application Insights sampling** — `host.json` sampling config; `excludedTypes: Request` keeps request telemetry unsampled
+- **Custom events** — `TelemetryClient.TrackEvent` in `DownstreamSystemNotifier.cs` and `ServiceBusLabResultNotifier.cs`
+- **Custom metrics** — `TelemetryClient.TrackMetric` for pipeline duration with `FileName`, `BatchId`, `Status` dimensions
+- **Cache-aside pattern** — `LabResultsEndpoint.cs`: Redis check → Cosmos fallback → cache store; `PatientResultUpdater.cs`: write-invalidate
+- **IConnectionMultiplexer singleton** — connection pool reuse; one instance per application lifetime
+- **Redis TTL** — 60s per key via `StringSetAsync(key, value, TimeSpan)`
+- **Redis eviction policies** — `volatile-lru` default; `allkeys-lru`, `allkeys-lfu`, `noeviction` variants
+- **Azure Managed Redis SKU tiers** — Memory Optimized (high throughput), Balanced (general purpose), Compute Optimized (CPU-intensive), Flash Optimized (large datasets, cost-sensitive)
+- **APIM external cache** — links Redis to APIM so `cache-lookup`/`cache-store` policies work on Consumption tier
 
 ### API Management
 
-- [ ] **Consumption SKU** — pay-per-call; cold starts; no built-in cache; no VNet
-- [ ] **APIM SKU comparison** — Consumption / Developer / Basic / Standard / Premium tiers
-- [ ] **Named values** — encrypted key-value store; referenced as `{{Name}}` in policy XML
-- [ ] **Products and subscriptions** — Clinic Standard (subscription required) and Internal Dashboard (JWT, no key)
-- [ ] **API-level policies** — `set-header` for key injection and clinic-id tagging; outbound header cleanup
-- [ ] **Operation-level policies** — `rate-limit-by-key` (Developer+ tier), `choose`/`return-response` Content-Type guard, `cache-lookup`/`cache-store`
-- [ ] **Public vs internal URL decoupling** — `/labs` public prefix maps to `/api` Functions prefix via Web service URL
+- **Consumption SKU** — pay-per-call; cold starts; no built-in cache; no VNet
+- **APIM SKU comparison** — Consumption / Developer / Basic / Standard / Premium tiers
+- **Named values** — encrypted key-value store; referenced as `{{Name}}` in policy XML
+- **Products and subscriptions** — Clinic Standard (subscription required) and Internal Dashboard (JWT, no key)
+- **API-level policies** — `set-header` for key injection and clinic-id tagging; outbound header cleanup
+- **Operation-level policies** — `rate-limit-by-key` (Developer+ tier), `choose`/`return-response` Content-Type guard, `cache-lookup`/`cache-store`
+- **Public vs internal URL decoupling** — `/labs` public prefix maps to `/api` Functions prefix via Web service URL
 
 ### Messaging & Events
 
-- [ ] **Service Bus queue** — `BatchCompletePublisher.cs` (`[ServiceBusOutput]`); `ServiceBusLabResultNotifier.cs` (`[ServiceBusTrigger]`, peek-lock)
-- [ ] **Service Bus topic + SQL subscriptions** — `AbnormalAlertPublisher.cs` → `lab-results-alerts`; `clinical-alerts` (all) and `critical-alerts` (`AbnormalCount > 5`)
-- [ ] **Dead-letter queue** — `ServiceBusDeadLetterMonitor.cs` peeks via `SubQueue.DeadLetter` option
-- [ ] **Peek-lock vs receive-and-delete** — peek-lock re-delivers on failure; receive-and-delete deletes immediately
-- [ ] **Message TTL and duplicate detection** — queue/topic-level config; `MessageId`-based dedup window
-- [ ] **Queues vs topics** — queue = one consumer per message; topic = each subscription gets independent delivery
-- [ ] **Event Grid system events** — `EventGridLabResultAuditor.cs` (`[EventGridTrigger]`); `Microsoft.Storage.BlobCreated` subscription on blob container
-- [ ] **Event Grid custom events** — `AbnormalResultEventPublisher.cs` publishes via `EventGridPublisherClient`; `EventGridPublisherClient` registered as singleton
-- [ ] **CloudEvents vs Event Grid schema** — CloudEvents is the open standard; `[EventGridTrigger]` accepts both
-- [ ] **Subscription filters** — subject-begins-with limits auditor to `lab-results-incoming` only; advanced filters for field-level matching
-- [ ] **Event Grid retry and dead-lettering** — exponential backoff up to 30 attempts / 24 hours; undelivered events to blob storage
-- [ ] **Event Grid vs Service Bus vs BlobTrigger** — push fan-out vs durable queuing vs polling
+- **Service Bus queue** — `BatchCompletePublisher.cs` (`[ServiceBusOutput]`); `ServiceBusLabResultNotifier.cs` (`[ServiceBusTrigger]`, peek-lock)
+- **Service Bus topic + SQL subscriptions** — `AbnormalAlertPublisher.cs` → `lab-results-alerts`; `clinical-alerts` (all) and `critical-alerts` (`AbnormalCount > 5`)
+- **Dead-letter queue** — `ServiceBusDeadLetterMonitor.cs` peeks via `SubQueue.DeadLetter` option
+- **Peek-lock vs receive-and-delete** — peek-lock re-delivers on failure; receive-and-delete deletes immediately
+- **Message TTL and duplicate detection** — queue/topic-level config; `MessageId`-based dedup window
+- **Queues vs topics** — queue = one consumer per message; topic = each subscription gets independent delivery
+- **Event Grid system events** — `EventGridLabResultAuditor.cs` (`[EventGridTrigger]`); `Microsoft.Storage.BlobCreated` subscription on blob container
+- **Event Grid custom events** — `AbnormalResultEventPublisher.cs` publishes via `EventGridPublisherClient`; `EventGridPublisherClient` registered as singleton
+- **CloudEvents vs Event Grid schema** — CloudEvents is the open standard; `[EventGridTrigger]` accepts both
+- **Subscription filters** — subject-begins-with limits auditor to `lab-results-incoming` only; advanced filters for field-level matching
+- **Event Grid retry and dead-lettering** — exponential backoff up to 30 attempts / 24 hours; undelivered events to blob storage
+- **Event Grid vs Service Bus vs BlobTrigger** — push fan-out vs durable queuing vs polling
 
 ### Containers
 
-- [ ] **Multi-stage Dockerfile** — `dotnet/sdk` build stage compiles and publishes; `dotnet/runtime` serve stage carries only the output — no SDK in the final image
-- [ ] **Repo-root build context** — required when the Dockerfile COPYs from sibling projects; `docker build -f SubProject/Dockerfile .` from the repo root
-- [ ] **Azure Container Registry** — `az acr create`, `docker push`, admin credentials vs `AcrPull` RBAC role
-- [ ] **ACR SKU tiers** — Basic (dev), Standard (production), Premium (geo-replication)
-- [ ] **ACI deployment via YAML** — `az container create --file container.yaml`; container group structure
-- [ ] **secureEnvironmentVariables** — values hidden from portal, API responses, and `az container show`; contrast with plain `environmentVariables`
-- [ ] **Restart policies** — `Always` (web servers), `OnFailure` (batch jobs), `Never` (one-shot tasks)
-- [ ] **Scale to zero** — `Never` policy means ACI stops automatically on exit; billing ends without manual intervention; `az container start` re-runs the job
-- [ ] **ACI vs App Service vs Static Web Apps** — ACI for containerised batch workloads; App Service for managed long-running PaaS; Static Web Apps for SPAs/static sites
+- **Multi-stage Dockerfile** — `dotnet/sdk` build stage compiles and publishes; `dotnet/runtime` serve stage carries only the output — no SDK in the final image
+- **Repo-root build context** — required when the Dockerfile COPYs from sibling projects; `docker build -f SubProject/Dockerfile .` from the repo root
+- **Azure Container Registry** — `az acr create`, `docker push`, admin credentials vs `AcrPull` RBAC role
+- **ACR SKU tiers** — Basic (dev), Standard (production), Premium (geo-replication)
+- **ACI deployment via YAML** — `az container create --file container.yaml`; container group structure
+- **secureEnvironmentVariables** — values hidden from portal, API responses, and `az container show`; contrast with plain `environmentVariables`
+- **Restart policies** — `Always` (web servers), `OnFailure` (batch jobs), `Never` (one-shot tasks)
+- **Scale to zero** — `Never` policy means ACI stops automatically on exit; billing ends without manual intervention; `az container start` re-runs the job
+- **ACI vs App Service vs Static Web Apps** — ACI for containerised batch workloads; App Service for managed long-running PaaS; Static Web Apps for SPAs/static sites
+
+---
+
+## References
+
+- [AZ-204: Developing Solutions for Microsoft Azure — Study Guide](https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/az-204)
+- [AZ-204 Exam page](https://learn.microsoft.com/en-us/credentials/certifications/azure-developer/)
