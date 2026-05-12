@@ -885,10 +885,12 @@ _serviceBusClient.CreateReceiver(
 
 **Create topic** `lab-results-alerts` with two subscriptions:
 
-| Subscription | Filter |
-|---|---|
-| `clinical-alerts` | None — receives all messages |
-| `critical-alerts` | SQL: `AbnormalCount > 5` |
+| Subscription | Filter type | Filter name | Filter expression |
+|---|---|---|---|
+| `clinical-alerts` | None (`$Default`) | — | Receives all messages |
+| `critical-alerts` | SQL | `high-abnormal-count` | `AbnormalCount > 5` |
+
+When creating the `critical-alerts` subscription, delete the default `$Default` filter first, then add a new SQL filter. The portal requires a name for each filter rule — use something descriptive like `high-abnormal-count`.
 
 Copy the connection string from **Shared access policies** → `RootManageSharedAccessKey`. Add to `local.settings.json` as `ServiceBusConnectionString` and to Function App configuration (or as a Key Vault secret).
 
