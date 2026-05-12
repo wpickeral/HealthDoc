@@ -1631,7 +1631,7 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 - **Key Vault soft-delete and purge protection** — accidental deletion safeguards
 - **RBAC vs access policies** — RBAC is the modern approach; access policies are vault-level and legacy
 - **System-assigned Managed Identity** — enabled on Function App; tied to the resource lifecycle
-- **System-assigned vs user-assigned** — system-assigned per-resource; user-assigned independent and shareable
+- **System-assigned vs user-assigned** — Function App uses system-assigned (tied to its lifecycle); ACI report generator uses user-assigned (`id-healthdoc-report-generator`) so role assignments survive the delete/recreate cycle required by `restartPolicy: Never`
 - **DefaultAzureCredential** — `az login` locally → Managed Identity in Azure; no code change between environments
 - **Passwordless SDK clients** — `CosmosClient(endpoint, credential)`, `BlobServiceClient(uri, credential)`
 - **RBAC role assignments** — `Key Vault Secrets User`, `Cosmos DB Built-in Data Contributor`, `Storage Blob Data Contributor`, `EventGrid Data Sender`
