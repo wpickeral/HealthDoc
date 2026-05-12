@@ -1178,11 +1178,11 @@ az container create --file container.yaml
 
 ### Azure Container Registry
 
-Create the registry first — you need the ACR name to tag and push the image.
+Create the registry first — you need the ACR name to tag and push the image. ACR names must be globally unique, lowercase alphanumeric only (no dashes or underscores), 5–50 characters.
 
 ```bash
 az acr create \
-  --name acrHealthDocDev \
+  --name acrhealthdocdev \
   --resource-group <rg> \
   --sku Basic \
   --admin-enabled true
@@ -1224,9 +1224,9 @@ docker run \
   healthdoc-report-generator:latest
 
 # Tag and push to ACR
-az acr login --name acrHealthDocDev
-docker tag healthdoc-report-generator:latest acrHealthDocDev.azurecr.io/healthdoc-report-generator:latest
-docker push acrHealthDocDev.azurecr.io/healthdoc-report-generator:latest
+az acr login --name acrhealthdocdev
+docker tag healthdoc-report-generator:latest acrhealthdocdev.azurecr.io/healthdoc-report-generator:latest
+docker push acrhealthdocdev.azurecr.io/healthdoc-report-generator:latest
 ```
 
 The container connects to real Azure resources using the credentials found by `DefaultAzureCredential`. For local runs, ensure `az login` has been run so the CLI credential is available inside the container, or pass `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` as env vars to use a service principal.
@@ -1236,7 +1236,7 @@ The container connects to real Azure resources using the credentials found by `D
 Copy `HealthDoc.ReportGenerator/container.yaml.example` to `container.yaml` (gitignored), fill in your values, and deploy:
 
 ```bash
-ACR_PASSWORD=$(az acr credential show --name acrHealthDocDev --query passwords[0].value -o tsv)
+ACR_PASSWORD=$(az acr credential show --name acrhealthdocdev --query passwords[0].value -o tsv)
 az container create --resource-group <rg> --file container.yaml
 ```
 
