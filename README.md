@@ -1155,6 +1155,10 @@ Wait for **Status: Running** on the Overview page before connecting.
 
 For this study project, access keys are used for simplicity. To enable them: **Authentication** → **Access keys** tab → enable access key authentication. Copy **Primary access key** and the endpoint from **Overview**.
 
+**Public network access:** Azure Managed Redis creates instances with public network access **disabled** by default. This project does not use VNet integration, so public access must be enabled for the Function App to reach the cache. In the portal: Redis instance → **Networking** → **Public access** tab → enable. Without this, every Redis call from the deployed Function App will time out with a `ConnectTimeout` error, causing the `StoreRecords` activity to fail and the orchestration to get stuck in a retry loop.
+
+> For production, use VNet integration (supported on Flex Consumption) with a private endpoint on the Redis instance, or restrict public access to specific IPs via firewall rules on the same tab.
+
 Azure Managed Redis uses **port 10000** and a different endpoint format from the legacy Azure Cache for Redis. Add to `local.settings.json`:
 
 ```json
