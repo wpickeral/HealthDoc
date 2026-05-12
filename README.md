@@ -773,8 +773,8 @@ In this project: locally → #5 (`az login`). In Azure → #3 (Managed Identity)
 
 | Resource | Role | Assignee | How to assign |
 |---|---|---|---|
-| Key Vault | `Key Vault Secrets User` | Function App identity | Portal IAM blade |
-| Storage account | `Storage Blob Data Contributor` | Function App identity | Portal IAM blade |
+| Key Vault | `Key Vault Secrets User` | Function App identity | Portal IAM blade or CLI |
+| Storage account | `Storage Blob Data Contributor` | Function App identity | Portal IAM blade or CLI |
 | Cosmos DB account | `Cosmos DB Built-in Data Contributor` | Function App identity | Azure CLI only (see below) |
 
 The Cosmos DB role is a **data plane** role, not a control plane role. It does not appear in the portal IAM blade and must be assigned via CLI.
@@ -783,16 +783,33 @@ The control plane roles available in the IAM blade (such as `Contributor` or `Co
 
 This is the same two-layer model as Azure SQL: granting a service `Contributor` on the SQL Server resource does not allow it to query tables. The service also needs a database user with the appropriate SQL-level permissions (`db_datareader`, `db_datawriter`). Control plane and data plane are independent in both services — both layers must be configured.
 
+Get the Function App's principal ID from **Function App → Identity → System assigned → Object (principal) ID**, then run:
+
 ```bash
+PRINCIPAL_ID=<object-id-of-function-app-identity>
+
+# Cosmos DB — data plane role; CLI only
 az cosmosdb sql role assignment create \
   --account-name <cosmos-account-name> \
   --resource-group <rg> \
   --role-definition-name "Cosmos DB Built-in Data Contributor" \
-  --principal-id <object-id-of-function-app-identity> \
+  --principal-id $PRINCIPAL_ID \
   --scope "/"
-```
 
-The `--principal-id` is the Object (principal) ID shown in the Function App → **Identity** → **System assigned** blade. The `--scope "/"` grants access to all databases in the account.
+# Storage — data plane role; also available via portal IAM blade
+STORAGE_ID=$(az storage account show --name <storage-account-name> --resource-group <rg> --query id -o tsv)
+az role assignment create \
+  --role "Storage Blob Data Contributor" \
+  --assignee $PRINCIPAL_ID \
+  --scope $STORAGE_ID
+
+# Key Vault — also available via portal IAM blade
+KV_ID=$(az keyvault show --name <keyvault-name> --resource-group <rg> --query id -o tsv)
+az role assignment create \
+  --role "Key Vault Secrets User" \
+  --assignee $PRINCIPAL_ID \
+  --scope $KV_ID
+```
 
 > **RBAC vs Access Policies:** Key Vault supports both models. Access policies are vault-level and older; Azure RBAC is consistent with all other Azure resources and the recommended approach. Know both for the exam.
 
