@@ -66,7 +66,7 @@ public class FileValidator
             validationResult.Errors.Add(e.Message);
             validationResult.IsValid = false;
 
-            _telemetryClient.TrackEvent("FileValidationFailed", new Dictionary<string, string>
+            _telemetryClient.TrackEvent(AppConfig.Events.FileValidationFailed, new Dictionary<string, string>
             {
                 ["FileName"] = payload.FileName,
                 ["ErrorCount"] = validationResult.Errors.Count.ToString(),

@@ -30,7 +30,7 @@ public class CriticalAlertHandler
             Connection = AppConfig.ServiceBus.Connection)]
         BatchCompletedMessage message)
     {
-        _telemetryClient.TrackEvent("CriticalAlertReceived", new Dictionary<string, string>
+        _telemetryClient.TrackEvent(AppConfig.Events.CriticalAlertReceived, new Dictionary<string, string>
         {
             ["BatchId"]       = message.BatchId,
             ["ClinicId"]      = message.ClinicId,

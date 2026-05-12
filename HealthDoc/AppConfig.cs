@@ -81,4 +81,13 @@ public static class AppConfig
             public const string Status = "Status";
         }
     }
+
+    public static class Events
+    {
+        public const string LabResultsProcessed    = "LabResultsProcessed";
+        public const string FileValidationFailed   = "FileValidationFailed";
+        public const string LabResultsBatchComplete = "LabResultsBatchComplete";
+        public const string ClinicalAlertReceived  = "ClinicalAlertReceived";
+        public const string CriticalAlertReceived  = "CriticalAlertReceived";
+    }
 }

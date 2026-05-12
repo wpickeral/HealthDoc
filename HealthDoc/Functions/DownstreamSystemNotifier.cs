@@ -29,7 +29,7 @@ public class DownstreamSystemNotifier
         foreach (var summary in summaries)
         {
             // Track business event in App Insights
-            _telemetryClient.TrackEvent("LabResultsProcessed", new Dictionary<string, string>
+            _telemetryClient.TrackEvent(AppConfig.Events.LabResultsProcessed, new Dictionary<string, string>
             {
                 ["ClinicId"] = summary.ClinicId,
                 ["RecordCount"] = summary.TotalRecords.ToString(),

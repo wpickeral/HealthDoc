@@ -28,7 +28,7 @@ public class ClinicalAlertHandler
             Connection = AppConfig.ServiceBus.Connection)]
         BatchCompletedMessage message)
     {
-        _telemetryClient.TrackEvent("ClinicalAlertReceived", new Dictionary<string, string>
+        _telemetryClient.TrackEvent(AppConfig.Events.ClinicalAlertReceived, new Dictionary<string, string>
         {
             ["BatchId"]       = message.BatchId,
             ["ClinicId"]      = message.ClinicId,
