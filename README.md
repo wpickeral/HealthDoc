@@ -171,6 +171,8 @@ HealthDoc/
 │   │   ├── DownstreamSystemNotifier.cs         # CosmosDBTrigger → App Insights telemetry
 │   │   ├── EventGridLabResultAuditor.cs        # EventGridTrigger (BlobCreated) → AuditLog
 │   │   ├── ServiceBusLabResultNotifier.cs      # ServiceBusTrigger → App Insights event
+│   │   ├── ClinicalAlertHandler.cs             # ServiceBusTrigger (clinical-alerts sub) → App Insights event
+│   │   ├── CriticalAlertHandler.cs             # ServiceBusTrigger (critical-alerts sub, AbnormalCount > 5) → LogWarning
 │   │   └── ServiceBusDeadLetterMonitor.cs      # TimerTrigger → peeks DLQ every 5 minutes
 │   └── Activities/
 │       ├── FileValidator.cs                    # ValidateFile — checks headers and data rows
