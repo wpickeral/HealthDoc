@@ -1159,7 +1159,7 @@ docker run -d -p 6379:6379 redis
 
 `HealthDoc.ReportGenerator` is a .NET 10 console app that queries `ProcessingSummaries` from Cosmos DB, generates a CSV report, writes it to a `lab-results-reports` blob container, and exits. It runs as a one-shot ACI batch job: triggered on demand, runs to completion, stops.
 
-A static SPA (the dashboard) would be a poor fit for ACI; the right deployment target for that is Azure Static Web Apps. ACI is used here because containerised batch workloads, restart policies, and scale-to-zero are AZ-204 exam topics, and a backend console app is a genuinely appropriate use of the service.
+ACI is used here because containerised batch workloads, restart policies, and scale-to-zero are AZ-204 exam topics, and a backend console app is a genuinely appropriate use of the service.
 
 ### What the Report Generator Does
 
