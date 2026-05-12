@@ -1222,17 +1222,12 @@ az acr login --name acrhealthdocdev
 docker tag healthdoc-report-generator:latest acrhealthdocdev.azurecr.io/healthdoc-report-generator:latest
 docker push acrhealthdocdev.azurecr.io/healthdoc-report-generator:latest
 ```
-
-**Testing locally without Docker** — the simplest approach. Runs on the host where `az login` credentials are available:
-
-Before running locally, grant your user identity the required data plane roles. Your object ID can also be found in the portal: **Azure Active Directory → Users → your account → Object ID**.
+**Testing locally without Docker** — the simplest approach; runs on the host where `az login` credentials are available via `DefaultAzureCredential`. One-time role assignment required:
 
 ```bash
-# One-time setup — assign yourself the required data plane roles
 PRINCIPAL_ID=$(az ad signed-in-user show --query id -o tsv)
 
-# Cosmos DB — data plane role; does NOT appear in the portal IAM blade
-# See Authentication & Security for why this is a separate role assignment
+# Cosmos DB data plane role — does NOT appear in portal IAM blade (see Authentication & Security)
 az cosmosdb sql role assignment create \
   --account-name <cosmos-account-name> \
   --resource-group <rg> \
@@ -1240,14 +1235,15 @@ az cosmosdb sql role assignment create \
   --principal-id $PRINCIPAL_ID \
   --scope "/"
 
-# Blob Storage — data plane role; also available via portal IAM blade
+# Blob Storage data plane role — also available via portal IAM blade
 STORAGE_ID=$(az storage account show --name <storage-account-name> --resource-group <rg> --query id -o tsv)
-
 az role assignment create \
   --role "Storage Blob Data Contributor" \
   --assignee $PRINCIPAL_ID \
   --scope $STORAGE_ID
 ```
+
+Your object ID can also be found in the portal: **Azure Active Directory → Users → your account → Object ID**.
 
 ```bash
 cd HealthDoc.ReportGenerator
@@ -1268,13 +1264,13 @@ docker run \
   healthdoc-report-generator:latest
 ```
 
-In Azure, ACI injects Managed Identity credentials automatically — no environment variables needed.
-
 ### Deploy to ACI
+
+In Azure, `DefaultAzureCredential` resolves to the container group's Managed Identity — no credential environment variables needed.
 
 #### Step 1 — Create a user-assigned managed identity
 
-A **user-assigned identity** is created once and persists independently of the container group. This matters because `restartPolicy: Never` means you delete and recreate the container group for each run — a system-assigned identity would be deleted with it, losing all role assignments.
+A **user-assigned identity** persists independently of the container group. This is required here because `restartPolicy: Never` means each run is a delete-and-recreate cycle — a system-assigned identity would be destroyed with the container group, losing all role assignments.
 
 ```bash
 az identity create --name id-healthdoc-report-generator --resource-group <rg>
@@ -1290,10 +1286,10 @@ IDENTITY_ID=$(az identity show \
   --query id -o tsv)
 ```
 
-#### Step 2 — Assign data plane roles to the identity
+#### Step 2 — Assign data plane roles
 
 ```bash
-# Cosmos DB — data plane role; does NOT appear in the portal IAM blade
+# Cosmos DB data plane role
 az cosmosdb sql role assignment create \
   --account-name <cosmos-account-name> \
   --resource-group <rg> \
@@ -1301,25 +1297,19 @@ az cosmosdb sql role assignment create \
   --principal-id $PRINCIPAL_ID \
   --scope "/"
 
-# Blob Storage — data plane role; also available via portal IAM blade
+# Blob Storage data plane role
 STORAGE_ID=$(az storage account show --name <storage-account-name> --resource-group <rg> --query id -o tsv)
-
 az role assignment create \
   --role "Storage Blob Data Contributor" \
   --assignee $PRINCIPAL_ID \
   --scope $STORAGE_ID
 ```
 
-#### Step 3 — Deploy
+These are one-time assignments. Because the identity is user-assigned, they survive every subsequent delete-and-recreate cycle.
 
-Copy `HealthDoc.ReportGenerator/container.yaml.example` to `container.yaml` (gitignored), fill in your values including `$IDENTITY_ID` in the `userAssignedIdentities` block, then deploy:
+#### Step 3 — Configure and deploy
 
-```bash
-ACR_PASSWORD=$(az acr credential show --name acrhealthdocdev --query passwords[0].value -o tsv)
-az container create --resource-group <rg> --file container.yaml
-```
-
-The container runs, generates the report, and stops. Each invocation of `az container create` is a new run. Because the identity is user-assigned, the role assignments remain intact across runs.
+Copy `HealthDoc.ReportGenerator/container.yaml.example` to `container.yaml` (gitignored) and fill in your values. Set the `userAssignedIdentities` key to the full resource ID from `$IDENTITY_ID`.
 
 **`secureEnvironmentVariables` vs `environmentVariables`:**
 
@@ -1328,6 +1318,18 @@ The container runs, generates the report, and stops. Each invocation of `az cont
 | Visible in portal | Yes | No |
 | Returned by `az container show` | Yes | No |
 | Use for | Non-sensitive config | Secrets, credentials, connection strings |
+
+```bash
+ACR_PASSWORD=$(az acr credential show --name acrhealthdocdev --query passwords[0].value -o tsv)
+az container create --resource-group <rg> --file container.yaml
+```
+
+To re-run the report generator, delete the container group and recreate it — `restartPolicy: Never` means a terminated container group will not restart on its own:
+
+```bash
+az container delete --resource-group <rg> --name aci-healthdoc-report-generator --yes
+az container create --resource-group <rg> --file container.yaml
+```
 
 ### Restart Policies
 
