@@ -1386,12 +1386,14 @@ curl -X POST https://<apim-name>.azure-api.net/labs/upload \
 A minimal valid CSV (two records, one abnormal):
 
 ```csv
-PatientId,TestName,Result,IsAbnormal,ClinicId
-P001,Glucose,5.2,false,CLINIC-01
-P002,Glucose,12.1,true,CLINIC-01
+ClinicId,PatientId,TestCode,Result,Unit,ReferenceRange,CollectedAt
+CLINIC-01,P001,HBA1C,5.1,%,4.0-5.6,2024-05-01T09:00:00
+CLINIC-01,P002,GLUCOSE,210,mg/dL,70-100,2024-05-01T09:15:00
 ```
 
-**Expected response:** `202 Accepted` with a JSON body containing `instanceId`.
+Row 2 will be flagged `IsAbnormal = true` (210 > 100), triggering the Service Bus alert topic and Event Grid custom event.
+
+**Expected response:** `201 Created` with a JSON body containing `instanceId`.
 
 ```json
 { "instanceId": "abc123..." }
@@ -1436,7 +1438,7 @@ Open **Cosmos DB → Data Explorer**:
 
 | Container | Expected |
 |---|---|
-| `LabResultRecords` | One document per CSV row (`PatientId`, `TestName`, `Result`, `IsAbnormal`, `ClinicId`) |
+| `LabResultRecords` | One document per CSV row (`ClinicId`, `PatientId`, `TestCode`, `Result`, `Unit`, `ReferenceRange`, `IsAbnormal`) |
 | `ProcessingSummaries` | One document with `TotalRecords: 2`, `AbnormalCount: 1`, `ClinicId: CLINIC-01` |
 | `AuditLog` | One document from `EventGridLabResultAuditor` with `EventType: BlobCreated` |
 
