@@ -327,13 +327,15 @@ On timeout, the final Cosmos write is delegated to the `WriteTimeoutSummary` act
 
 | Runtime status | HTTP response | Meaning |
 |---|---|---|
-| `Completed` | `200 OK` + serialized output | Pipeline finished |
-| `Failed` | `500` + serialized output | Orchestrator threw an exception |
-| `Terminated` | `500 Terminated` | Instance was forcibly stopped |
+| `Completed` | `200 OK` + `{ "status": "Completed", "instanceId": "..." }` | Pipeline finished |
+| `Failed` | `500` + `{ "status": "Failed", "instanceId": "..." }` | Orchestrator threw an exception |
+| `Terminated` | `500` + `{ "status": "Terminated", "instanceId": "..." }` | Instance was forcibly stopped |
 | Not found (`null`) | `404 Not Found` | Unknown instance ID |
 | Any other | `202 Accepted` | Still running — poll again |
 
 The `202 Accepted` response is the key exam detail: it signals the client to keep polling the same URL. Returning `404` for an unknown instance ID is important — without this guard, a missing orchestration is indistinguishable from one that is still running, causing the client to poll forever.
+
+`SerializedOutput` (the orchestrator's return value) is intentionally not returned here. Fetching it requires `getInputsAndOutputs: true` on `GetInstanceAsync`, which is expensive for large payloads. Callers that need the processed records use `GET /labs/results/{clinicId}` instead.
 
 **Exam concept:** `[DurableClient]` binding, `GetInstanceAsync`, HTTP polling consumer, `OrchestrationRuntimeStatus` values.
 
@@ -1435,8 +1437,9 @@ curl https://<apim-name>.azure-api.net/labs/status/<instanceId> \
 | Response | Meaning |
 |---|---|
 | `202 Accepted` | Orchestration still running — poll again |
-| `200 OK` with `"runtimeStatus": "Completed"` | Pipeline finished successfully |
-| `500` | Orchestration faulted — check App Insights |
+| `200 OK` with `{ "status": "Completed", "instanceId": "..." }` | Pipeline finished successfully |
+| `404 Not Found` | Unknown instance ID |
+| `500` with `{ "status": "Failed" \| "Terminated", "instanceId": "..." }` | Orchestration faulted — check App Insights |
 
 ---
 

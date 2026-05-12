@@ -29,9 +29,9 @@ public static class BatchStatusEndpoint
 
         return status.RuntimeStatus switch
         {
-            OrchestrationRuntimeStatus.Completed => new OkObjectResult(status.SerializedOutput),
-            OrchestrationRuntimeStatus.Failed => new ObjectResult(status.SerializedOutput) { StatusCode = 500 },
-            OrchestrationRuntimeStatus.Terminated => new ObjectResult("Terminated") { StatusCode = 500 },
+            OrchestrationRuntimeStatus.Completed => new OkObjectResult(new { status = "Completed", instanceId }),
+            OrchestrationRuntimeStatus.Failed => new ObjectResult(new { status = "Failed", instanceId }) { StatusCode = 500 },
+            OrchestrationRuntimeStatus.Terminated => new ObjectResult(new { status = "Terminated", instanceId }) { StatusCode = 500 },
             _ => new AcceptedResult()
         };
     }
