@@ -22,7 +22,7 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 8. [Authentication & Security](#authentication--security)
 9. [Azure Service Bus](#azure-service-bus)
 10. [Azure Event Grid](#azure-event-grid)
-11. [Azure Cache for Redis](#azure-cache-for-redis)
+11. [Azure Managed Redis](#azure-managed-redis)
 12. [Container Deployment](#container-deployment)
 13. [AZ-204 Concepts Checklist](#az-204-concepts-checklist)
 
@@ -1029,9 +1029,9 @@ To verify events are being delivered, add a test subscription on the topic: **+ 
 
 ---
 
-## Azure Cache for Redis
+## Azure Managed Redis
 
-> **Retirement notice:** Azure Cache for Redis is being replaced by **Azure Managed Redis**. New instance creation will be blocked from **October 1, 2026**, and existing instances will be retired on **September 30, 2028**. Microsoft recommends Azure Managed Redis for all new deployments — it offers higher performance at lower cost. The concepts covered here (cache-aside, TTL, eviction, `IConnectionMultiplexer`) apply equally to Azure Managed Redis.
+> **Note:** Azure Cache for Redis is being replaced by Azure Managed Redis. New instance creation is blocked from October 1, 2026; existing instances are retired September 30, 2028. This project uses Azure Managed Redis throughout.
 
 ### Cache-Aside in the Application Layer
 
@@ -1136,7 +1136,7 @@ Wait for **Status: Running** on the Overview page before connecting.
 
 For this study project, access keys are used for simplicity. To enable them: **Authentication** → **Access keys** tab → enable access key authentication. Copy **Primary access key** and the endpoint from **Overview**.
 
-Azure Managed Redis uses **port 10000** and a different endpoint format from Azure Cache for Redis. Add to `local.settings.json`:
+Azure Managed Redis uses **port 10000** and a different endpoint format from the legacy Azure Cache for Redis. Add to `local.settings.json`:
 
 ```json
 "RedisConnectionString": "<name>.<region>.redis.azure.net:10000,password=<key>,ssl=True,abortConnect=False"
@@ -1341,7 +1341,7 @@ az container logs --resource-group <rg> --name aci-healthdoc-report-generator
 - [ ] **IConnectionMultiplexer singleton** — connection pool reuse; one instance per application lifetime
 - [ ] **Redis TTL** — 60s per key via `StringSetAsync(key, value, TimeSpan)`
 - [ ] **Redis eviction policies** — `volatile-lru` default; `allkeys-lru`, `allkeys-lfu`, `noeviction` variants
-- [ ] **Redis SKU tiers** — Basic (dev), Standard (replication), Premium (clustering + persistence), Enterprise (geo-replication)
+- [ ] **Azure Managed Redis SKU tiers** — Memory Optimized (high throughput), Balanced (general purpose), Compute Optimized (CPU-intensive), Flash Optimized (large datasets, cost-sensitive)
 - [ ] **APIM external cache** — links Redis to APIM so `cache-lookup`/`cache-store` policies work on Consumption tier
 
 ### API Management
