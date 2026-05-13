@@ -428,7 +428,7 @@ Upload a CSV to trigger the full pipeline:
 curl -X POST http://localhost:7220/api/upload \
   -H "Content-Type: text/csv" \
   -H "x-functions-key: <your-local-function-key>" \
-  -H "X-Clinic-Id: CLINIC-01" \
+  -H "x-clinic-id: CLINIC-01" \
   --data-binary @lab_results_2024_05_01.csv
 ```
 

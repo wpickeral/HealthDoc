@@ -27,7 +27,7 @@ public class UploadLabResultsEndpoint
         HttpRequestData req,
         [DurableClient] DurableTaskClient client)
     {
-        var clinicId = req.Headers.TryGetValues("X-Clinic-Id", out var values)
+        var clinicId = req.Headers.TryGetValues("x-clinic-id", out var values)
             ? values.FirstOrDefault() ?? "UNKNOWN"
             : "UNKNOWN";
         var fileName = $"lab-results-{clinicId}-{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}.csv";
