@@ -655,6 +655,8 @@ Add three operations:
 
 Create one subscription per clinic (`clinic-001-test`, scope: Clinic Standard). Each clinic receives a unique key — revoke one without affecting others.
 
+> **Subscription name as clinic identifier:** The subscription name becomes the `ClinicId` on every document written by that clinic — Cosmos records, audit logs, Redis cache keys, and Service Bus messages all use it. This project assumes the name is agreed upon at provisioning time and communicated to the clinic alongside their subscription key. A name like `clinic-001` is more meaningful than the subscription ID (a GUID) and stable for the lifetime of the subscription.
+
 **Clinic Standard product-level policy:**
 
 ```xml
