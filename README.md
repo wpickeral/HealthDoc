@@ -256,6 +256,8 @@ A single CSV upload flows through these steps end-to-end:
 
 10. **Notify**: `BatchCompletePublisher` sends a `BatchCompletedMessage` to the `lab-results-notifications` Service Bus queue, consumed by `ServiceBusLabResultNotifier`. If abnormal results exist, `AbnormalAlertPublisher` sends the same message to the `lab-results-alerts` topic, which fans it out to the `clinical-alerts` subscription (all messages) and `critical-alerts` (SQL filter: `AbnormalCount > 5`). Separately, `DownstreamSystemNotifier` fires from the Cosmos DB trigger on `ProcessingSummaries` and emits a structured event to Application Insights.
 
+   > **Why publishers use explicit SDK sends instead of `[ServiceBusOutput]` bindings:** In the .NET isolated worker model, a Durable activity function's return value is intercepted by the Durable runtime to pass the result back to the orchestrator. When the orchestrator calls `CallActivityAsync` without a type parameter (return value not needed), the runtime still consumes the return value — the `[ServiceBusOutput]` binding never sees it and messages are silently dropped. The `DURABLE2002` analyzer warning ("CallActivityAsync is expecting return type 'none'") is the signal that this conflict exists. The fix is to inject `ServiceBusClient` and call `sender.SendMessageAsync` directly, making delivery explicit rather than relying on a binding that cannot fire. See [Durable Functions .NET isolated worker overview](https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-dotnet-isolated-overview).
+
 11. **Archive**: `MoveFile` copies the blob from `lab-results-incoming` to `lab-results-processed` via server-side copy (`StartCopyFromUriAsync`) and deletes the source.
 
 ### Data Models
