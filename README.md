@@ -1524,7 +1524,7 @@ Open **Cosmos DB → Data Explorer**:
 | Container | Expected |
 |---|---|
 | `LabResultRecords` | One document per CSV row (`ClinicId`, `PatientId`, `TestCode`, `Result`, `Unit`, `ReferenceRange`, `IsAbnormal`) |
-| `ProcessingSummaries` | One document with `TotalRecords: 2`, `AbnormalCount: 1`, `ClinicId: CLINIC-01` |
+| `ProcessingSummaries` | One document with `TotalRecords: 2`, `AbnormalCount: 1`, `ClinicId` matching the APIM subscription ID |
 | `AuditLog` | One document from `EventGridLabResultAuditor` with `ClinicId`, `FileName`, `EventType: Microsoft.Storage.BlobCreated`, and `BlobUrl` populated |
 
 ---
