@@ -234,7 +234,7 @@ HealthDoc/
 
 A single CSV upload flows through these steps end-to-end:
 
-1. **Upload**: A partner clinic POSTs a CSV body to `POST /labs/upload` through APIM. The APIM inbound policy injects an `X-Clinic-Id` header set to `context.Subscription.Id` — callers never supply it themselves. `UploadLabResultsEndpoint` reads this header and generates a unique filename (`lab-results-{clinicId}-{timestamp}-{shortGuid}.csv`), writes it to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. Embedding the clinic ID in the filename means all downstream components — including the Event Grid auditor and the Redis cache key — can derive it without a separate lookup or extra parameters.
+1. **Upload**: A partner clinic POSTs a CSV body to `POST /labs/upload` through APIM. The APIM inbound policy injects an `X-Clinic-Id` header set to `context.Subscription.Id` — callers never supply it themselves. `UploadLabResultsEndpoint` reads this header, generates a unique filename (`lab-results-{clinicId}-{timestamp}-{shortGuid}.csv`), writes it to `lab-results-incoming`, and passes `ClinicId` explicitly in `FilePayload` so the authoritative value flows through the entire orchestration. The endpoint returns `{ "instanceId": "<filename>" }` for status polling.
 
 2. **Orchestration trigger**: `UploadLabResultsEndpoint` starts the orchestration directly after writing the blob, passing the file content and generated filename as a `FilePayload`. The filename is the deterministic instance ID, so the caller can begin polling immediately.
 
@@ -244,7 +244,7 @@ A single CSV upload flows through these steps end-to-end:
 
 4. **Validate**: The orchestrator calls `ValidateFile`. If required columns are missing or any `Result` field is non-numeric, it calls `MoveFile` to archive the blob to `lab-results-failed` and returns a failed `ProcessingSummary`. No records are processed.
 
-5. **Parse**: `ParseFile` splits the CSV into rows, skips the header, and maps each row to a `LabRecord` via `LabRecord.From(string[])`.
+5. **Parse**: `ParseFile` splits the CSV into rows, skips the header, and maps each row to a `LabRecord` via `LabRecord.From(string[])`. The `ClinicId` column in the CSV is parsed for schema validation but immediately overridden with `FilePayload.ClinicId` — the APIM-injected value is the authority, not the caller-supplied CSV column.
 
 6. **Process (parallel)**: The orchestrator fans out, dispatching one `ProcessRecord` activity per `LabRecord`. Each activity calls `ProcessedRecord.From(record)`, which parses the `ReferenceRange` (e.g. `"4.0-5.6"`), determines `IsAbnormal`, and generates a Cosmos-ready document ID.
 

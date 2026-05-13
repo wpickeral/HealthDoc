@@ -46,7 +46,7 @@ public class UploadLabResultsEndpoint
         _logger.LogInformation("Blob written to {Container}/{FileName} — starting orchestration",
             AppConfig.Blob.IncomingContainer, fileName);
 
-        var payload = new FilePayload { FileName = fileName, Content = content };
+        var payload = new FilePayload { ClinicId = clinicId, FileName = fileName, Content = content };
         var options = new StartOrchestrationOptions { InstanceId = fileName };
         await client.ScheduleNewOrchestrationInstanceAsync(nameof(LabResultOrchestrator), payload, options);
 

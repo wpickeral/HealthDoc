@@ -26,7 +26,11 @@ public class FileParser
             .Split('\n')
             .Skip(1)
             .Where(l => !string.IsNullOrWhiteSpace(l))
-            .Select(line => LabRecord.From(line.Split(',')))
+            .Select(line => {
+                var record = LabRecord.From(line.Split(','));
+                record.ClinicId = payload.ClinicId;
+                return record;
+            })
             .ToList();
 
         _logger.LogInformation("Parsed {RecordCount} records from {FileName}", records.Count, payload.FileName);

@@ -34,7 +34,9 @@ public class LabResultIngestionTrigger
 
         _logger.LogInformation("Lab result file detected: {FileName} — scheduling pipeline", name);
 
-        var payload = new FilePayload() { FileName = name, Content = content };
+        var parts = Path.GetFileNameWithoutExtension(name).Split('-');
+        var clinicId = parts.Length >= 3 ? parts[2] : "UNKNOWN";
+        var payload = new FilePayload { ClinicId = clinicId, FileName = name, Content = content };
 
         var options = new StartOrchestrationOptions { InstanceId = name };
 
