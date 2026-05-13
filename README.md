@@ -662,7 +662,7 @@ Create one subscription per clinic (`clinic-001-test`, scope: Clinic Standard). 
     <inbound>
         <base />
         <set-header name="x-clinic-id" exists-action="override">
-            <value>@(context.Subscription.Id)</value>
+            <value>@(context.Subscription.Name)</value>
         </set-header>
     </inbound>
     <outbound>
