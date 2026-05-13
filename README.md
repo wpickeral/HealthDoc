@@ -598,9 +598,6 @@ Add three operations:
         <set-header name="x-functions-key" exists-action="override">
             <value>{{FunctionAppKey}}</value>
         </set-header>
-        <set-header name="x-clinic-id" exists-action="override">
-            <value>@(context.Subscription.Id)</value>
-        </set-header>
     </inbound>
     <outbound>
         <base />
@@ -664,6 +661,9 @@ Create one subscription per clinic (`clinic-001-test`, scope: Clinic Standard). 
 <policies>
     <inbound>
         <base />
+        <set-header name="x-clinic-id" exists-action="override">
+            <value>@(context.Subscription.Id)</value>
+        </set-header>
     </inbound>
     <outbound>
         <base />
@@ -672,7 +672,7 @@ Create one subscription per clinic (`clinic-001-test`, scope: Clinic Standard). 
 </policies>
 ```
 
-`x-clinic-id` is an internal routing header set by APIM for the Function App's benefit — external callers have no use for it in the response. Stripping it here rather than at the API level keeps the concern scoped to the product that owns the header: the Internal Dashboard product has no `x-clinic-id` to clean up.
+Both the injection and the strip are scoped to the Clinic Standard product: only subscribers of this product send uploads, so only their requests need the header set. The Internal Dashboard product has no `x-clinic-id` concern at all. Stripping on the way out keeps the header from leaking back to callers — it exists solely for the Function App's benefit.
 
 ---
 
