@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Azure.Messaging;
 using HealthDoc.Models;
 using Microsoft.Azure.Functions.Worker;
@@ -49,18 +50,21 @@ public class EventGridLabResultAuditor
         };
     }
 
-    // Blob filenames follow the pattern: lab-results-{timestamp}-{guid}.csv
-    // ClinicId is not in the filename — a real system would decode it from blob metadata
-    // or use a lookup. For the audit record we store a placeholder to keep the
-    // partition key populated (Cosmos DB requires a value for /ClinicId).
-    private static string ExtractClinicId(string fileName) =>
-        fileName.StartsWith("lab-results-") ? "PENDING" : "UNKNOWN";
+    // Blob filenames follow the pattern: lab-results-{clinicId}-{timestamp}-{guid}.csv
+    // ClinicId is the third segment (index 2) when split on '-'.
+    private static string ExtractClinicId(string fileName)
+    {
+        var parts = Path.GetFileNameWithoutExtension(fileName).Split('-');
+        return parts.Length >= 3 ? parts[2] : "UNKNOWN";
+    }
 
     // Minimal projection of the BlobCreated event data — only the fields we need.
-    // The full schema is documented at:
-    // https://learn.microsoft.com/azure/event-grid/event-schema-blob-storage
+    // The Event Grid BlobCreated payload uses lowercase "url"; [JsonPropertyName] is required
+    // because System.Text.Json is case-sensitive by default.
+    // Full schema: https://learn.microsoft.com/azure/event-grid/event-schema-blob-storage
     private sealed class BlobCreatedData
     {
+        [JsonPropertyName("url")]
         public string? Url { get; set; }
     }
 }

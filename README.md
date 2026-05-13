@@ -234,7 +234,7 @@ HealthDoc/
 
 A single CSV upload flows through these steps end-to-end:
 
-1. **Upload**: A partner clinic POSTs a CSV body to `POST /labs/upload` through APIM. `UploadLabResultsEndpoint` generates a unique filename (`lab-results-{timestamp}-{shortGuid}.csv`), writes it to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. The client holds this ID to poll status later.
+1. **Upload**: A partner clinic POSTs a CSV body to `POST /labs/upload` through APIM. The APIM inbound policy injects an `X-Clinic-Id` header set to `context.Subscription.Id` — callers never supply it themselves. `UploadLabResultsEndpoint` reads this header and generates a unique filename (`lab-results-{clinicId}-{timestamp}-{shortGuid}.csv`), writes it to `lab-results-incoming`, and returns `{ "instanceId": "<filename>" }`. Embedding the clinic ID in the filename means all downstream components — including the Event Grid auditor and the Redis cache key — can derive it without a separate lookup or extra parameters.
 
 2. **Orchestration trigger**: `UploadLabResultsEndpoint` starts the orchestration directly after writing the blob, passing the file content and generated filename as a `FilePayload`. The filename is the deterministic instance ID, so the caller can begin polling immediately.
 
@@ -270,7 +270,7 @@ A single CSV upload flows through these steps end-to-end:
 | `ProcessingSummary` | `StoreSummary` | Monitor loop, Service Bus, App Insights | `BatchId`, `AbnormalCount`, `ConfirmationStatus` |
 | `BatchCompletedMessage` | `BatchCompletePublisher` | `ServiceBusLabResultNotifier` | `BatchId`, `ClinicId`, `AbnormalCount` |
 | `AbnormalResultEvent` | `AbnormalResultEventPublisher` | Event Grid subscribers | `BatchId`, `ClinicId`, `AbnormalCount` |
-| `LabAuditRecord` | `EventGridLabResultAuditor` | `AuditLog` Cosmos container | `FileName`, `EventType`, `ReceivedAt` |
+| `LabAuditRecord` | `EventGridLabResultAuditor` | `AuditLog` Cosmos container | `ClinicId`, `FileName`, `EventType`, `BlobUrl`, `ReceivedAt` |
 
 `ProcessedRecord` inherits from `LabRecord`. Both expose a static `From(...)` factory so the mapping logic can be unit tested without any Azure dependency.
 
@@ -428,19 +428,22 @@ Upload a CSV to trigger the full pipeline:
 curl -X POST http://localhost:7220/api/upload \
   -H "Content-Type: text/csv" \
   -H "x-functions-key: <your-local-function-key>" \
+  -H "X-Clinic-Id: CLINIC-01" \
   --data-binary @lab_results_2024_05_01.csv
 ```
+
+In production APIM injects `X-Clinic-Id` automatically from the subscription. For local testing, pass it manually.
 
 Response `201 Created`:
 
 ```json
-{ "instanceId": "lab-results-20260508213642-8582e72b.csv" }
+{ "instanceId": "lab-results-CLINIC-01-20260508213642-8582e72b.csv" }
 ```
 
 Poll status using the returned `instanceId`:
 
 ```bash
-curl http://localhost:7220/api/status/lab-results-20260508213642-8582e72b.csv \
+curl http://localhost:7220/api/status/lab-results-CLINIC-01-20260508213642-8582e72b.csv \
   -H "x-functions-key: <your-local-function-key>"
 ```
 
@@ -1439,7 +1442,7 @@ This section walks through a complete pipeline run and explains where to validat
 
 ### Step 1 — Upload a CSV via APIM
 
-POST a small CSV through the APIM gateway. Use the Clinic Standard subscription key from **APIM → Subscriptions**.
+POST a small CSV through the APIM gateway. Use the Clinic Standard subscription key from **APIM → Subscriptions**. APIM injects the `X-Clinic-Id` header automatically from the subscription — do not pass it manually.
 
 ```bash
 curl -X POST https://<apim-name>.azure-api.net/labs/upload \
@@ -1458,10 +1461,10 @@ CLINIC-01,P002,GLUCOSE,210,mg/dL,70-100,2024-05-01T09:15:00
 
 Row 2 will be flagged `IsAbnormal = true` (210 > 100), triggering the Service Bus alert topic and Event Grid custom event.
 
-**Expected response:** `201 Created` with a JSON body containing `instanceId`.
+**Expected response:** `201 Created` with a JSON body containing `instanceId`. The filename encodes the clinic ID derived from the APIM subscription.
 
 ```json
-{ "instanceId": "abc123..." }
+{ "instanceId": "lab-results-CLINIC-01-20260513132410-4bed7a8a.csv" }
 ```
 
 Save the `instanceId` — you will use it in the next step.
@@ -1506,7 +1509,7 @@ Open **Cosmos DB → Data Explorer**:
 |---|---|
 | `LabResultRecords` | One document per CSV row (`ClinicId`, `PatientId`, `TestCode`, `Result`, `Unit`, `ReferenceRange`, `IsAbnormal`) |
 | `ProcessingSummaries` | One document with `TotalRecords: 2`, `AbnormalCount: 1`, `ClinicId: CLINIC-01` |
-| `AuditLog` | One document from `EventGridLabResultAuditor` with `EventType: BlobCreated` |
+| `AuditLog` | One document from `EventGridLabResultAuditor` with `ClinicId`, `FileName`, `EventType: Microsoft.Storage.BlobCreated`, and `BlobUrl` populated |
 
 ---
 
