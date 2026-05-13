@@ -1533,19 +1533,33 @@ Open **Cosmos DB → Data Explorer**:
 
 ### Step 5 — Validate Service Bus messages
 
-Open **Service Bus → Queues → lab-results-notifications → Service Bus Explorer**:
+Messages are consumed immediately by the subscriber functions — do not expect them to be visible in Service Bus Explorer. Validate by checking that the handlers fired in App Insights:
 
-- Select **Peek** mode
-- Confirm one message is present with `BatchId`, `ClinicId`, `TotalRecords`, `AbnormalCount` in the message body
+```kql
+traces
+| where cloud_RoleName == "health-doc"
+| where message has "Service Bus: batch" or message has "Clinical alert" or message has "CRITICAL"
+| order by timestamp desc
+| take 10
+```
 
-Open **Service Bus → Topics → lab-results-alerts → Subscriptions**:
-
-| Subscription | Expected message count | Condition |
+| Log message | Function | Condition |
 |---|---|---|
-| `clinical-alerts` | 1 | Any abnormal count > 0 |
-| `critical-alerts` | 0 | AbnormalCount must be > 5 to receive a message |
+| `Service Bus: batch {BatchId} — clinic {ClinicId}, {TotalRecords} records, {AbnormalCount} abnormal` | `ServiceBusLabResultNotifier` | Every successful batch |
+| `Clinical alert: batch {BatchId} for clinic {ClinicId} has {AbnormalCount} abnormal result(s)` | `ClinicalAlertHandler` | Any abnormal count > 0 |
+| `CRITICAL: batch {BatchId} for clinic {ClinicId} has {AbnormalCount} abnormal results — exceeds threshold of 5` | `CriticalAlertHandler` | AbnormalCount > 5 only |
 
-To trigger `critical-alerts`, upload a CSV with more than 5 abnormal rows.
+To trigger `CriticalAlertHandler`, upload a CSV with more than 5 abnormal rows.
+
+Each handler also emits a custom event to Application Insights (`customEvents` table) for structured querying:
+
+```kql
+customEvents
+| where cloud_RoleName == "health-doc"
+| where name in ("LabResultsBatchComplete", "ClinicalAlertReceived", "CriticalAlertReceived")
+| order by timestamp desc
+| take 10
+```
 
 ---
 
