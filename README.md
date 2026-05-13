@@ -658,6 +658,22 @@ Add three operations:
 
 Create one subscription per clinic (`clinic-001-test`, scope: Clinic Standard). Each clinic receives a unique key — revoke one without affecting others.
 
+**Clinic Standard product-level policy:**
+
+```xml
+<policies>
+    <inbound>
+        <base />
+    </inbound>
+    <outbound>
+        <base />
+        <set-header name="x-clinic-id" exists-action="delete" />
+    </outbound>
+</policies>
+```
+
+`x-clinic-id` is an internal routing header set by APIM for the Function App's benefit — external callers have no use for it in the response. Stripping it here rather than at the API level keeps the concern scoped to the product that owns the header: the Internal Dashboard product has no `x-clinic-id` to clean up.
+
 ---
 
 ## Authentication & Security
