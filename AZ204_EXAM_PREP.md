@@ -44,6 +44,16 @@ The README now contains a full reference section for each topic below. Use this 
 
 These are the high-value exercises. Do them in order — the first two are in the 20–25% and 25–30% domains.
 
+| Exercise | Time | Format |
+|---|---|---|
+| 1 — Event Hubs | ~45 min | Code + portal |
+| 2 — Queue Storage | ~30 min | Code + portal |
+| 3 — Blob lifecycle | ~20 min | Portal only |
+| 4 — Cosmos DB consistency | ~20 min | One code change |
+| 5 — SAS tokens | ~20 min | CLI only (code already done) |
+| 6 — App Insights alerts | ~20 min | Portal only |
+| **Total** | **~2.5 hours** | |
+
 ---
 
 ## Exercise 1 — Azure Event Hubs
