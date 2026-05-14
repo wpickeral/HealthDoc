@@ -19,14 +19,18 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 5. [Durable Functions Patterns](#durable-functions-patterns)
 6. [Local Development](#local-development)
 7. [Azure Cosmos DB](#azure-cosmos-db)
-8. [Azure API Management](#azure-api-management)
-9. [Authentication & Security](#authentication--security)
-10. [Azure Service Bus](#azure-service-bus)
-11. [Azure Event Grid](#azure-event-grid)
-12. [Azure Managed Redis](#azure-managed-redis)
-13. [Azure Container Instances](#azure-container-instances)
-14. [End-to-End Testing](#end-to-end-testing)
-15. [AZ-204 Coverage Map](#az-204-coverage-map)
+8. [Azure Blob Storage](#azure-blob-storage)
+9. [Azure API Management](#azure-api-management)
+10. [Authentication & Security](#authentication--security)
+11. [Azure Service Bus](#azure-service-bus)
+12. [Azure Queue Storage](#azure-queue-storage)
+13. [Azure Event Grid](#azure-event-grid)
+14. [Azure Event Hubs](#azure-event-hubs)
+15. [Azure Managed Redis](#azure-managed-redis)
+16. [Azure Container Instances](#azure-container-instances)
+17. [End-to-End Testing](#end-to-end-testing)
+18. [Application Insights — KQL Queries and Alerts](#application-insights--kql-queries-and-alerts)
+19. [AZ-204 Coverage Map](#az-204-coverage-map)
 
 ---
 
@@ -43,7 +47,9 @@ Co-authored with [Claude](https://claude.ai) (Anthropic).
 | **Azure Key Vault** | Stores connection strings as secrets; app settings reference them at runtime | Key Vault secrets, Key Vault references, soft-delete |
 | **Managed Identity** | Function App authenticates to Cosmos, Storage, and Key Vault without connection strings | System-assigned identity, DefaultAzureCredential, RBAC |
 | **Azure Service Bus** | Delivers batch-complete notifications (queue) and abnormal-result alerts (topic with subscriptions) | Queues, topics, subscriptions, DLQ, peek-lock |
+| **Azure Queue Storage** | Simple durable queue for validation failure notifications; uses existing storage account | Queue trigger, output binding, visibility timeout, poison queue |
 | **Azure Event Grid** | Push-based fan-out: blob created audit events (system) and abnormal result detected events (custom) | System events, custom events, CloudEvents, subscription filters |
+| **Azure Event Hubs** | High-throughput telemetry stream; pipeline analytics consumer group reads batch completion events | Event hub trigger, producer client, partitions, consumer groups, checkpointing |
 | **Azure Managed Redis** | Cache-aside on lab results queries; write-invalidation on new record writes | Cache-aside pattern, TTL, eviction, IConnectionMultiplexer |
 | **Application Insights** | Telemetry collection with sampling; custom business events and pipeline metrics | Monitoring, custom events, structured logging |
 | **MSAL (React SPA)** | Internal dashboard authenticates via authorization code + PKCE; silent token renewal | MSAL auth flows, token acquisition, cache strategy |
@@ -510,6 +516,159 @@ Serverless is ideal for a study project — you pay per request unit consumed wi
 
 **RBAC:** The Function App's managed identity needs the `Cosmos DB Built-in Data Contributor` data plane role to read and write documents. This is covered in [Authentication & Security](#authentication--security) — the role must be assigned via CLI and does not appear in the portal IAM blade.
 
+### Consistency Levels
+
+Cosmos DB offers five consistency levels — a sliding scale between strong consistency guarantees and low latency. The level is configured on the account and can be relaxed (but not strengthened) per individual request.
+
+| Level | Guarantee | Latency | RU cost | Use case |
+|---|---|---|---|---|
+| **Strong** | Always reads the latest committed write | Highest | Highest | Financial transactions; single-region or no multi-region writes |
+| **Bounded Staleness** | Reads lag by at most K versions or T seconds | High | High | Near-real-time with a known staleness window |
+| **Session** *(default)* | Reads your own writes within a session | Low | Low | Most apps — single-user or single-session flows |
+| **Consistent Prefix** | No out-of-order reads; may see stale data | Low | Low | Event sourcing where ordering matters but lag is acceptable |
+| **Eventual** | No ordering or recency guarantee | Lowest | Lowest | Counts, likes, aggregations where temporary stale data is fine |
+
+The account-level default is **Session**. Override per request in `StorageConfirmationValidator.cs` to ensure the monitor loop reads the write that just happened:
+
+```csharp
+var response = await _cosmosClient
+    .GetDatabase(AppConfig.CosmosDb.Database)
+    .GetContainer(AppConfig.CosmosDb.SummariesContainer)
+    .ReadItemAsync<ProcessingSummary>(
+        batchId,
+        new PartitionKey(batchId),
+        new ItemRequestOptions { ConsistencyLevel = ConsistencyLevel.Strong });
+```
+
+**AZ-204 exam rule:** You can only *weaken* consistency at the request level — if the account default is Session, you can request Eventual on a specific read, but you cannot request Strong. If the account is configured for Strong, you cannot use multi-region writes. Session is the correct answer for most exam scenarios involving a single user or single application session.
+
+---
+
+## Azure Blob Storage
+
+### How It Fits Into the Pipeline
+
+Blob Storage is the entry and exit point for every lab result file. Four containers handle the full lifecycle of a CSV from upload to archival:
+
+```
+lab-results-incoming   ← UploadLabResultsEndpoint writes the raw CSV here
+                          EventGridLabResultAuditor fires on BlobCreated (audit trail)
+                          LabResultIngestionTrigger fires on new blob (inactive on Flex Consumption)
+
+lab-results-processed  ← MoveProcessedFile copies here after successful pipeline run
+lab-results-failed     ← MoveProcessedFile copies here after validation failure
+lab-results-reports    ← ReportGenerator (ACI) writes CSV reports here on demand
+```
+
+`MoveProcessedFile.cs` uses a **server-side copy** — `StartCopyFromUriAsync` followed by `DeleteAsync` on the source. This moves the file within the same storage account without transferring bytes through the Function host.
+
+### Access Tiers
+
+Blobs in Azure Storage are assigned an access tier that controls cost. Tiers can be set at the storage account level (default) or overridden per blob.
+
+| Tier | Storage cost | Retrieval cost | Minimum duration | Best for |
+|---|---|---|---|---|
+| **Hot** | Highest | Lowest | None | Frequently accessed files |
+| **Cool** | Lower | Higher | 30 days | Infrequently accessed; early deletion fee applies |
+| **Cold** | Lower | Higher | 90 days | Rarely accessed; lower cost than Cool |
+| **Archive** | Lowest | Highest + rehydration | 180 days | Long-term retention; not directly readable |
+
+**Rehydration from Archive:** a blob in Archive tier is offline and cannot be read until rehydrated. Rehydration copies the blob to Hot or Cool tier. Two priorities:
+- **Standard** — up to 15 hours
+- **High** — under 1 hour (higher cost)
+
+**AZ-204 exam rule:** Archive blobs cannot be read directly — you must rehydrate first. Attempting to download an Archive blob returns `409 Conflict`. Rehydration is a copy operation; the original Archive blob remains until explicitly deleted.
+
+### Blob Storage Lifecycle Management
+
+A lifecycle management policy automatically transitions or deletes blobs based on age, removing the need for manual cleanup or scheduled jobs. Policies run once per day.
+
+Policy structure: a rule has a **filter** (which blobs it applies to) and **actions** (what to do at each age threshold).
+
+```json
+{
+  "rules": [
+    {
+      "name": "archive-processed",
+      "enabled": true,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["lab-results-processed/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "tierToCool":    { "daysAfterModificationGreaterThan": 30 },
+            "tierToArchive": { "daysAfterModificationGreaterThan": 90 },
+            "delete":        { "daysAfterModificationGreaterThan": 365 }
+          }
+        }
+      }
+    },
+    {
+      "name": "delete-failed",
+      "enabled": true,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["lab-results-failed/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": { "daysAfterModificationGreaterThan": 60 }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+**AZ-204 exam rule:** Lifecycle policies run once per day. A blob that already passed an age threshold when the policy was first created is processed on the next evaluation cycle — the policy is not applied retroactively to all existing blobs on creation.
+
+### Blob Properties and Metadata
+
+Every blob has two kinds of descriptive data, both retrievable without downloading the blob body.
+
+**System properties** — set and maintained by Azure Storage:
+
+| Property | Description |
+|---|---|
+| `ContentType` | MIME type (e.g. `text/csv`) |
+| `ContentLength` | Blob size in bytes |
+| `ETag` | Opaque string; changes on every write; use for optimistic concurrency |
+| `LastModified` | UTC timestamp of the last write |
+
+**User-defined metadata** — arbitrary key-value string pairs set by your application:
+
+```csharp
+// Write metadata
+var blobClient = containerClient.GetBlobClient(blobName);
+await blobClient.SetMetadataAsync(new Dictionary<string, string>
+{
+    { "ClinicId", clinicId },
+    { "BatchId",  batchId }
+});
+
+// Read metadata (without downloading the blob body)
+var props = await blobClient.GetPropertiesAsync();
+var clinicId = props.Value.Metadata["ClinicId"];
+```
+
+**AZ-204 exam rule:** Metadata values are always strings. Metadata is not indexed — you cannot use `GetBlobsAsync` to filter by metadata values. To find blobs by metadata, you must list all blobs and filter client-side, or use Azure Blob Index tags (a separate feature that supports server-side filtering).
+
+### Portal Setup
+
+Container setup is covered in [Local Development](#local-development). The additional setup for this section is the lifecycle management policy:
+
+1. Storage account → **Data management** → **Lifecycle management** → **Add rule**
+2. Enter rule name `archive-processed`, click **Next**
+3. Filter: **Blob type** = Block blobs, **Prefix** = `lab-results-processed/`
+4. Actions: set **Tier to cool** at 30 days, **Tier to archive** at 90 days, **Delete blob** at 365 days
+5. Save, then repeat for `delete-failed` with only a **Delete blob** action at 60 days
+
 ---
 
 ## Azure API Management
@@ -895,6 +1054,57 @@ Also add the endpoint settings. These are not connection strings — they are th
 | `CosmosDBEndpoint` | `https://<account>.documents.azure.com:443/` | Cosmos DB account → **Overview** → URI |
 | `StorageAccountEndpoint` | `https://<account>.blob.core.windows.net/` | Storage account → **Endpoints** → Blob service |
 
+### Stored Access Policies
+
+A **stored access policy** is a named permission set stored on a Blob container (or Queue/Table). A service SAS that references the policy by identifier can be revoked instantly by deleting the policy — without rotating the storage account key.
+
+**AZ-204 exam rule:** Ad-hoc SAS tokens (permissions embedded inline) cannot be revoked before their expiry. The only way to invalidate them early is to rotate the storage account key, which breaks every other SAS and SDK client using that key. Stored access policies solve this — delete the policy and every SAS referencing it returns `403` immediately.
+
+| | Ad-hoc SAS | Stored Access Policy SAS |
+|---|---|---|
+| **Permissions** | Embedded in the token | Defined in the policy; token holds only the policy ID |
+| **Revocability** | Cannot be revoked before expiry | Revoke by deleting the policy |
+| **Max policies per container** | N/A | 5 |
+| **SAS type required** | Service SAS or user delegation SAS | Service SAS only (account key required to sign) |
+
+> **User delegation SAS vs service SAS:** `FailedLabFilesEndpoint.cs` uses user delegation SAS — signed with the Function App's AAD credential (Managed Identity) via `GetUserDelegationKeyAsync`. This is the passwordless approach and is preferred when no revocability is needed. Stored access policies only work with service SAS (signed with `StorageSharedKeyCredential` — the account key). They cannot be combined with user delegation SAS.
+
+**CLI: create a stored access policy on the failed-files container:**
+
+```bash
+az storage container policy create \
+  --account-name <storage-account-name> \
+  --container-name lab-results-failed \
+  --name failed-read \
+  --permissions r \
+  --expiry 2027-01-01T00:00:00Z \
+  --connection-string "<storage-connection-string>"
+```
+
+**CLI: generate a service SAS that references the policy (revocable):**
+
+```bash
+az storage blob generate-sas \
+  --account-name <storage-account-name> \
+  --container-name lab-results-failed \
+  --name <blob-name> \
+  --policy-name failed-read \
+  --output tsv \
+  --connection-string "<storage-connection-string>"
+```
+
+**CLI: revoke all SAS tokens that reference the policy (instant, no key rotation):**
+
+```bash
+az storage container policy delete \
+  --account-name <storage-account-name> \
+  --container-name lab-results-failed \
+  --name failed-read \
+  --connection-string "<storage-connection-string>"
+```
+
+After the policy is deleted, any SAS token containing `si=failed-read` returns `403 Forbidden` immediately, regardless of the token's `se` (expiry) parameter.
+
 ---
 
 ## Azure Service Bus
@@ -1015,6 +1225,89 @@ Copy the connection string from **Shared access policies** → `RootManageShared
 
 ---
 
+## Azure Queue Storage
+
+### Queue Storage vs Service Bus
+
+Both services deliver messages from a producer to a consumer. The right choice depends on the features you need.
+
+| | Azure Queue Storage | Azure Service Bus |
+|---|---|---|
+| **Max message size** | 64 KB | 256 KB (Standard) / 100 MB (Premium) |
+| **Max TTL** | 7 days | 14 days |
+| **Dead-letter queue** | No (poison queue after 5 dequeues) | Yes — configurable DLQ with reason |
+| **Message ordering** | Best-effort FIFO | Guaranteed with sessions |
+| **Topics / subscriptions** | No | Yes |
+| **Delivery semantics** | At-least-once | At-least-once (peek-lock) |
+| **Best for** | Simple high-volume queuing, low cost | Enterprise messaging — DLQ, sessions, topics, transactions |
+
+**AZ-204 exam rule:** Use Queue Storage when you need a simple durable queue built into your existing storage account, at the lowest cost and with no need for topics, DLQ, or ordering. Use Service Bus when you need any of those enterprise features.
+
+### How It Fits Into the Pipeline
+
+When `FileValidator` determines that a CSV is invalid, the orchestrator calls `FailureQueueNotifier` to write a notification to the `lab-results-failures` queue. `FailureQueueHandler` triggers on new messages and logs the failure for downstream alerting.
+
+```
+LabResultOrchestrator
+  └─ ValidateFile returns IsValid = false
+       └─ FailureQueueNotifier activity
+            └─ [QueueOutput] → lab-results-failures queue
+                                    │
+                              FailureQueueHandler
+                              [QueueTrigger] → LogWarning
+```
+
+The `[QueueOutput]` binding on an activity function returns the message as a string. The `[QueueTrigger]` function fires once per message.
+
+```csharp
+// Producer — activity function with output binding
+[Function(AppConfig.Activities.NotifyFailureQueue)]
+[QueueOutput(AppConfig.Queue.FailuresQueue, Connection = AppConfig.Blob.Connection)]
+public string Run([ActivityTrigger] string fileName)
+    => $"Validation failed: {fileName} at {DateTimeOffset.UtcNow:O}";
+
+// Consumer — queue trigger function
+[Function(nameof(FailureQueueHandler))]
+public void Run(
+    [QueueTrigger(AppConfig.Queue.FailuresQueue, Connection = AppConfig.Blob.Connection)]
+    string message)
+    => _logger.LogWarning("Failure queue: {Message}", message);
+```
+
+> **Note:** `[QueueTrigger]` uses the same `StorageConnectionString` as the blob bindings — no separate namespace or connection string is needed. Queue Storage is part of the storage account.
+
+### Visibility Timeout
+
+Queue Storage delivers messages using a **visibility timeout** — its equivalent of Service Bus peek-lock.
+
+1. A consumer reads a message; the message becomes **invisible** to all other consumers for the visibility timeout period (default: 30 seconds)
+2. If the consumer deletes the message before the timeout expires, it is gone permanently
+3. If the consumer crashes or the timeout expires before deletion, the message **reappears** and is available for another consumer to pick up
+4. After a message is dequeued 5 times without being deleted, Queue Storage automatically moves it to a `<queue-name>-poison` queue
+
+`[QueueTrigger]` handles the delete and the poison queue automatically — no explicit `DeleteMessageAsync` or DLQ configuration needed.
+
+**AZ-204 exam rule:** The poison queue name is always `<queue-name>-poison`. After 5 failed dequeues the message moves there; it never returns to the original queue. Service Bus has configurable `MaxDeliveryCount` and a DLQ with a failure reason; Queue Storage's approach is simpler and automatic.
+
+### Portal Setup
+
+No new Azure resource is needed — Queue Storage is built into the storage account you already have.
+
+**Create the queue:**
+
+```bash
+az storage queue create \
+  --name lab-results-failures \
+  --account-name <storage-account-name> \
+  --connection-string "<storage-connection-string>"
+```
+
+Or via portal: Storage account → **Queues** → **+ Queue** → name: `lab-results-failures`.
+
+The `[QueueTrigger]` and `[QueueOutput]` bindings use `Connection = AppConfig.Blob.Connection`, which resolves to `StorageConnectionString` — the same setting already in `local.settings.json`. No additional configuration is required.
+
+---
+
 ## Azure Event Grid
 
 ### Push-Based Events vs Polling and Queuing
@@ -1111,6 +1404,128 @@ To verify events are being delivered, add a test subscription on the topic: **+ 
 | **Filter to event types** | `Microsoft.Storage.BlobCreated` |
 | **Endpoint type** | Azure Function → `EventGridLabResultAuditor` |
 | **Subject begins with** | `/blobServices/default/containers/lab-results-incoming/` |
+
+---
+
+## Azure Event Hubs
+
+### Event Hubs vs Event Grid vs Service Bus
+
+All three services route events or messages, but they solve different problems:
+
+| | Azure Event Grid | Azure Event Hubs | Azure Service Bus |
+|---|---|---|---|
+| **Model** | Push-based fan-out | High-throughput stream | Durable queue / topic |
+| **Consumer model** | Independent subscribers per event | Consumer groups read the full stream | Queue = one consumer; topic = per subscription |
+| **Replay** | No | Yes — retained for 1–7 days | No (once consumed, gone) |
+| **Throughput** | Moderate | Millions of events/sec | Moderate |
+| **Best for** | Reactive notifications, webhooks | Telemetry, logs, IoT, click streams | Reliable command delivery, ordering, DLQ |
+
+**AZ-204 exam rule:** Use Event Hubs for high-throughput streaming where events need to be retained and replayed by multiple independent reader systems. Use Event Grid for push-based reactive fan-out. Use Service Bus for guaranteed delivery with retry and dead-lettering.
+
+### How It Fits Into the Pipeline
+
+After `StoreSummary` writes a batch result to Cosmos, `TelemetryPublisher` (activity) sends a telemetry event to the `lab-results-telemetry` event hub. `EventHubAnalyticsProcessor` (trigger, consumer group `pipeline-analytics`) reads from the hub independently of any other consumer.
+
+```
+StoreSummary activity
+  └─ TelemetryPublisher activity
+       └─ EventHubProducerClient.SendAsync
+            └─ lab-results-telemetry event hub
+                    │
+                    ├─ $Default consumer group  (available for other readers)
+                    └─ pipeline-analytics consumer group
+                            └─ EventHubAnalyticsProcessor [EventHubTrigger]
+                                 └─ LogInformation per event
+```
+
+```csharp
+// Producer — activity function
+public async Task Run([ActivityTrigger] ProcessingSummary summary)
+{
+    var batch = await _producer.CreateBatchAsync();
+    batch.TryAdd(new EventData(JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        summary.BatchId, summary.ClinicId, summary.AbnormalCount,
+        PublishedAt = DateTimeOffset.UtcNow
+    })));
+    await _producer.SendAsync(batch);
+}
+
+// Consumer — event hub trigger (cardinality: many — processes a batch per invocation)
+[Function(nameof(EventHubAnalyticsProcessor))]
+public void Run(
+    [EventHubTrigger(AppConfig.EventHub.Name,
+                     Connection    = AppConfig.EventHub.Connection,
+                     ConsumerGroup = AppConfig.EventHub.ConsumerGroup)]
+    string[] events)
+{
+    foreach (var e in events)
+        _logger.LogInformation("Event Hub event: {Event}", e);
+}
+```
+
+### Partitions and Consumer Groups
+
+**Partitions** divide the event stream into N parallel ordered logs. Events are distributed across partitions by a partition key (or round-robin if no key is specified). Each partition is an independent, ordered, immutable sequence of events.
+
+**Consumer groups** are independent logical readers of the entire event hub. Each consumer group maintains its own offset (position) per partition and reads the full stream independently. `$Default` is always created automatically.
+
+```
+lab-results-telemetry event hub  (2 partitions)
+├─ Partition 0  → events: e1, e3, e5 ...
+└─ Partition 1  → events: e2, e4, e6 ...
+
+$Default consumer group        → reads all partitions from its own offset
+pipeline-analytics consumer group → reads all partitions from its own offset (independently)
+```
+
+**AZ-204 exam rule:** Each consumer group reads the full stream independently — adding a new consumer group does not affect other consumer groups' positions. One consumer group = one independent downstream system (e.g. one for analytics, one for archiving, one for alerting).
+
+### Checkpointing and Event Retention
+
+The `[EventHubTrigger]` automatically checkpoints its read position per partition in a blob storage container. If the Function host restarts, it resumes from the last checkpoint rather than the beginning.
+
+Event data is **not deleted on consumption** — it is retained for the configured retention window (default: 1 day; up to 7 days on Standard tier, up to 90 days on Premium/Dedicated). A new consumer group added after events were written can read from the beginning using `EventPosition.Earliest`.
+
+**AZ-204 exam rule:** This is the fundamental difference from Service Bus — Event Hubs retains all events for the retention window regardless of whether they have been consumed. Service Bus deletes a message once a consumer acknowledges it.
+
+### Portal Setup
+
+**Create Event Hubs namespace** — Portal → **Create a resource** → search **Event Hubs**:
+
+| Field | Value |
+|---|---|
+| Namespace name | `evhns-healthdoc-dev` (globally unique) |
+| Pricing tier | **Standard** (Basic supports only 1 consumer group; Standard supports multiple) |
+| Throughput units | 1 |
+
+**Create the event hub** inside the namespace → **+ Event Hub**:
+
+| Field | Value |
+|---|---|
+| Name | `lab-results-telemetry` |
+| Partition count | 2 |
+| Message retention | 1 day |
+
+**Create a consumer group** inside the event hub → **+ Consumer Group**:
+
+| Field | Value |
+|---|---|
+| Name | `pipeline-analytics` |
+
+Copy the connection string from **Shared access policies** → `RootManageSharedAccessKey`. Add to `local.settings.json` as `EventHubConnectionString` and to Function App configuration.
+
+Add the constant to `AppConfig.cs`:
+
+```csharp
+public static class EventHub
+{
+    public const string Connection    = "EventHubConnectionString";
+    public const string Name          = "lab-results-telemetry";
+    public const string ConsumerGroup = "pipeline-analytics";
+}
+```
 
 ---
 
@@ -1720,10 +2135,20 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 
 - **Blob containers** — `lab-results-incoming`, `lab-results-processed`, `lab-results-failed`
 - **Server-side blob copy** — `MoveProcessedFile.cs` (`StartCopyFromUriAsync` + delete source)
-- **SAS token generation** — `FailedLabFilesEndpoint.cs` (`BlobClient.GenerateSasUri`, 1-hour read-only)
+- **SAS token generation** — `FailedLabFilesEndpoint.cs` (user delegation key SAS via `GetUserDelegationKeyAsync`; 1-hour read-only)
 - **Cosmos DB partition key design** — `LabResultRecords` uses `/ClinicId` (single-partition queries by clinic); `ProcessingSummaries` uses `/id`
 - **Cosmos DB SDK query** — `StorageConfirmationValidator.cs` (`ReadItemAsync`, `CosmosException` not-found handling)
 - **Cosmos DB output binding** — declarative writes via `[CosmosDBOutput]` attribute; no SDK call needed
+- **Cosmos DB consistency levels** — account default Session; per-request override via `ItemRequestOptions { ConsistencyLevel }`; Strong not available with multi-region writes
+- **Blob lifecycle management** — tier-to-cool/archive/delete rules by container prefix and age; runs once per day
+- **Blob properties and metadata** — `GetPropertiesAsync()` for system properties; `SetMetadataAsync()` for user-defined key-value pairs; metadata is not indexed
+- **Blob access tiers** — Hot / Cool / Cold / Archive; Archive requires rehydration (Standard ≤15 h, High ≤1 h) before read
+- **Queue Storage trigger and output** — `[QueueTrigger]` / `[QueueOutput]` reusing `StorageConnectionString`; visibility timeout; automatic poison queue after 5 failed dequeues
+- **Queue Storage vs Service Bus** — Queue Storage for simple low-cost queuing; Service Bus for DLQ, sessions, topics, ordering
+- **Event Hubs trigger** — `[EventHubTrigger]` with `string[] events` (cardinality: many); consumer group; checkpointing to blob
+- **Event Hubs producer** — `EventHubProducerClient.CreateBatchAsync` + `SendAsync`; registered as singleton
+- **Partitions and consumer groups** — partitions = parallel ordered logs; each consumer group reads the full stream independently
+- **Event Hubs vs Event Grid vs Service Bus** — Event Hubs for high-throughput streaming with replay; Event Grid for push fan-out; Service Bus for durable delivery with DLQ
 
 ### Security
 
@@ -1732,7 +2157,9 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 - **APIM validate-jwt** — product-level policy on Internal Dashboard; `openid-config` from Azure AD OIDC endpoint
 - **APIM policy execution order** — Product → API → Operation stacking; why validate-jwt lives at product level
 - **Subscription keys vs JWT** — system identity vs person identity; when to use each
-- **SAS tokens** — time-limited, scope-limited blob access without sharing account keys
+- **SAS tokens — user delegation SAS** — `FailedLabFilesEndpoint.cs`; signed with AAD credential via `GetUserDelegationKeyAsync`; passwordless; no account key needed
+- **SAS tokens — service SAS vs user delegation SAS** — service SAS supports stored access policies; user delegation SAS does not
+- **Stored access policies** — policy stored on the container; service SAS references it by ID; revoke instantly by deleting the policy without rotating the account key
 - **Azure Key Vault secrets** — `CosmosDBConnectionString` and `StorageConnectionString` stored as secrets
 - **Key Vault references in App Settings** — `@Microsoft.KeyVault(VaultName=...;SecretName=...)` resolved transparently by the runtime
 - **Key Vault soft-delete and purge protection** — accidental deletion safeguards
@@ -1748,6 +2175,8 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 - **Application Insights sampling** — `host.json` sampling config; `excludedTypes: Request` keeps request telemetry unsampled
 - **Custom events** — `TelemetryClient.TrackEvent` in `DownstreamSystemNotifier.cs` and `ServiceBusLabResultNotifier.cs`
 - **Custom metrics** — `TelemetryClient.TrackMetric` for pipeline duration with `FileName`, `BatchId`, `Status` dimensions
+- **KQL queries** — `customEvents`, `customMetrics`, `traces`, `exceptions`, `dependencies` table schema; `summarize`, `extend`, `bin`, `percentile`
+- **Alert rules — log vs metric alerts** — log alerts run arbitrary KQL; metric alerts use pre-aggregated platform metrics; log alerts have higher cost and latency
 - **Cache-aside pattern** — `LabResultsEndpoint.cs`: Redis check → Cosmos fallback → cache store; `PatientResultUpdater.cs`: write-invalidate
 - **IConnectionMultiplexer singleton** — connection pool reuse; one instance per application lifetime
 - **Redis TTL** — 60s per key via `StringSetAsync(key, value, TimeSpan)`
@@ -1779,6 +2208,11 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 - **Subscription filters** — subject-begins-with limits auditor to `lab-results-incoming` only; advanced filters for field-level matching
 - **Event Grid retry and dead-lettering** — exponential backoff up to 30 attempts / 24 hours; undelivered events to blob storage
 - **Event Grid vs Service Bus vs BlobTrigger** — push fan-out vs durable queuing vs polling
+- **Queue Storage trigger** — `[QueueTrigger]` on `lab-results-failures`; visibility timeout; automatic poison queue
+- **Queue Storage output binding** — `[QueueOutput]` returns string message from activity function
+- **Event Hubs trigger** — `[EventHubTrigger]` on `lab-results-telemetry`; `pipeline-analytics` consumer group; batch processing
+- **Event Hubs producer** — `EventHubProducerClient` singleton; `CreateBatchAsync` + `SendAsync`
+- **Partitions, consumer groups, checkpointing** — partitions distribute load; consumer groups read independently; checkpoint stored in blob
 
 ### Containers
 
@@ -1791,6 +2225,94 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 - **Restart policies** — `Always` (web servers), `OnFailure` (batch jobs), `Never` (one-shot tasks)
 - **Scale to zero** — `Never` policy means ACI stops automatically on exit; billing ends without manual intervention; `az container start` re-runs the job
 - **ACI vs App Service vs Static Web Apps** — ACI for containerised batch workloads; App Service for managed long-running PaaS; Static Web Apps for SPAs/static sites
+
+---
+
+## Application Insights — KQL Queries and Alerts
+
+The project emits structured telemetry via `TelemetryClient`. These KQL queries run in **Application Insights → Logs**. Understanding the table schema and query structure is an AZ-204 exam topic.
+
+### Key Tables
+
+| Table | What it contains |
+|---|---|
+| `customEvents` | `TelemetryClient.TrackEvent(...)` calls — business-level events |
+| `customMetrics` | `TelemetryClient.TrackMetric(...)` calls — numeric measurements |
+| `requests` | HTTP trigger invocations (Functions automatically emits these) |
+| `traces` | `ILogger` output (`LogInformation`, `LogWarning`, etc.) |
+| `exceptions` | Unhandled exceptions and `TelemetryClient.TrackException(...)` |
+| `dependencies` | Outbound calls (Cosmos DB, Storage, Service Bus — auto-instrumented) |
+
+### Query 1 — Abnormal result count per clinic (last 24 h)
+
+```kusto
+customEvents
+| where timestamp > ago(24h)
+| where name == "LabResultsProcessed"
+| extend clinicId       = tostring(customDimensions["ClinicId"])
+| extend abnormalCount  = toint(customDimensions["AbnormalCount"])
+| summarize totalAbnormal = sum(abnormalCount) by clinicId
+| order by totalAbnormal desc
+```
+
+### Query 2 — Average pipeline duration by status
+
+```kusto
+customMetrics
+| where name == "PipelineDurationSeconds"
+| extend status   = tostring(customDimensions["Status"])
+| extend batchId  = tostring(customDimensions["BatchId"])
+| summarize avgDuration = avg(value), p95 = percentile(value, 95) by status
+| order by avgDuration desc
+```
+
+### Query 3 — Failed blob ingestion rate (last 7 days)
+
+```kusto
+customEvents
+| where timestamp > ago(7d)
+| where name in ("LabResultsProcessed", "FileValidationFailed")
+| summarize
+    total   = countif(name == "LabResultsProcessed"),
+    failed  = countif(name == "FileValidationFailed")
+  by bin(timestamp, 1d)
+| extend failureRate = round(todouble(failed) / (total + failed) * 100, 1)
+| order by timestamp asc
+```
+
+### Query 4 — Dead-letter queue findings
+
+```kusto
+traces
+| where timestamp > ago(24h)
+| where message has "Dead-letter"
+| project timestamp, message, severityLevel
+| order by timestamp desc
+```
+
+### Alert Rule — High abnormal result rate
+
+Create a **Log alert** that fires when abnormal results spike:
+
+**Portal:** Application Insights → **Alerts** → **Create** → **Log search**
+
+| Field | Value |
+|---|---|
+| Query | `customEvents \| where name == "LabResultsProcessed" \| extend n = toint(customDimensions["AbnormalCount"]) \| summarize total = sum(n) by bin(timestamp, 1h)` |
+| Aggregation | Sum of `total` |
+| Condition | Greater than `10` |
+| Evaluation frequency | Every 5 minutes |
+| Look-back period | 1 hour |
+| Severity | `2 — Warning` |
+
+**AZ-204 exam distinction — metric alert vs log alert:**
+
+| | Metric alert | Log alert |
+|---|---|---|
+| **Data source** | Pre-aggregated platform metrics (Requests, CPU, etc.) | Arbitrary KQL against raw log data |
+| **Latency** | Near-real-time (1–5 min) | Depends on ingestion + evaluation window |
+| **Cost** | Lower | Higher (query runs on every evaluation) |
+| **Best for** | Known numeric thresholds on standard metrics | Custom business events or complex conditions |
 
 ---
 

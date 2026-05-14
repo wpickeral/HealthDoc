@@ -20,6 +20,11 @@ public static class AppConfig
         public const string IncomingTriggerPath = "lab-results-incoming/{name}";
         public const string ProcessedContainer = "lab-results-processed";
         public const string FailedContainer   = "lab-results-failed";
+
+        // Stored access policy ID for service SAS tokens on the failed-files container.
+        // A service SAS that references this policy can be revoked instantly by deleting the policy.
+        // See README.md "Stored Access Policies" for the CLI commands.
+        public const string FailedReadPolicyId = "failed-read";
     }
 
     public static class KeyVault
