@@ -166,7 +166,7 @@ HealthDoc/
 ├── HealthDoc/                                  # Azure Functions isolated worker app
 │   ├── Program.cs                              # DI — all SDK clients registered as singletons
 │   ├── AppConfig.cs                            # Centralized const strings for all services
-│   ├── host.json                               # Application Insights sampling config
+│   ├── host.json                               # Log level (Function: Information) + App Insights sampling config
 │   ├── Http/                                   # HTTP triggers
 │   │   ├── UploadLabResultsEndpoint.cs         # POST /api/upload → blob write + starts orchestration
 │   │   ├── BatchStatusEndpoint.cs              # GET /api/status/{instanceId} — async HTTP API
@@ -2013,7 +2013,7 @@ requests
 | take 10
 ```
 
-Each row is one trigger invocation. If rows appear, both the producer (activity) and consumer (trigger) are wired correctly. Function invocations show in the `requests` table — do not use `traces` for this check, as `LogInformation` messages may be dropped by sampling before they reach App Insights.
+Each row is one trigger invocation. If rows appear, both the producer (activity) and consumer (trigger) are wired correctly. Function invocations always appear in the `requests` table (excluded from sampling). `LogInformation` messages appear in `traces` — requires `logLevel.Function: Information` in `host.json`, which is already configured in this project.
 
 **Confirm throughput metrics in the portal:**
 
@@ -2164,7 +2164,7 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 - **Dependency injection** — all SDK clients registered as singletons in `Program.cs`
 - **Centralized configuration** — `AppConfig.cs` (`const` strings for C# attribute parameters; nested classes per service)
 - **Structured logging** — `ILogger<T>` throughout; cache hit/miss, DLQ findings, pipeline milestones
-- **Application Insights** — sampling in `host.json`; `TelemetryClient` custom events and metrics; pipeline duration metric with dimensions
+- **Application Insights** — `host.json` log level (`Function: Information`) ensures `LogInformation` reaches App Insights; sampling config with `excludedTypes: Request`; `TelemetryClient` custom events and metrics; pipeline duration metric with dimensions
 
 ### Storage
 
@@ -2207,7 +2207,7 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 
 ### Monitor & Optimize
 
-- **Application Insights sampling** — `host.json` sampling config; `excludedTypes: Request` keeps request telemetry unsampled
+- **Application Insights sampling** — `host.json` sampling config; `excludedTypes: Request` keeps request telemetry unsampled; `logLevel.Function: Information` ensures `LogInformation` from function code flows to `traces`
 - **Custom events** — `TelemetryClient.TrackEvent` in `DownstreamSystemNotifier.cs` and `ServiceBusLabResultNotifier.cs`
 - **Custom metrics** — `TelemetryClient.TrackMetric` for pipeline duration with `FileName`, `BatchId`, `Status` dimensions
 - **KQL queries** — `customEvents`, `customMetrics`, `traces`, `exceptions`, `dependencies` table schema; `summarize`, `extend`, `bin`, `percentile`
