@@ -183,7 +183,7 @@ string[] eventData
 
 **Event retention:** events are NOT deleted after consumption. They are retained for the configured duration (1–7 days). A new consumer group can read from the beginning (`EventPosition.Earliest`).
 
-**Checkpointing:** the trigger tracks its position in each partition via a checkpoint blob. If the function restarts, it resumes from the last checkpoint — not the beginning.
+**Checkpointing:** the trigger tracks its position in each partition via a checkpoint blob. If the function restarts, it resumes from the last checkpoint — not the beginning. `[EventHubTrigger]` handles this automatically using `AzureWebJobsStorage` — no SDK checkpoint code required. Explicit checkpoint management (`EventProcessorClient`) is only needed for custom processors built outside of Azure Functions.
 
 ---
 
