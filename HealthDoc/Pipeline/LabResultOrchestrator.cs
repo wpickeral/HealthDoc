@@ -39,6 +39,8 @@ public class LabResultOrchestrator
             logger.LogWarning("{FileName} failed validation — {ErrorCount} error(s): {Errors}",
                 payload.FileName, validationResult.Errors.Count, string.Join("; ", validationResult.Errors));
 
+            await context.CallActivityAsync(AppConfig.Activities.NotifyFailureQueue, payload.FileName);
+
             await MoveFileAsync(context, payload.FileName, AppConfig.Blob.FailedContainer,
                 "Validation failed — missing required fields");
 

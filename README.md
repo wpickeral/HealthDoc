@@ -199,6 +199,11 @@ HealthDoc/
 │   │   └── Consumers/
 │   │       ├── EventGridLabResultAuditor.cs    # EventGridTrigger (BlobCreated) → AuditLog
 │   │       └── DownstreamSystemNotifier.cs     # CosmosDBTrigger → App Insights telemetry
+│   ├── Queue/                                  # Queue Storage publisher and consumer
+│   │   ├── Publishers/
+│   │   │   └── FailureQueueNotifierActivity.cs # NotifyFailureQueue — writes to lab-results-failures
+│   │   └── Consumers/
+│   │       └── FailureQueueHandler.cs          # QueueTrigger — logs validation failure messages
 │   └── EventHub/                               # Event Hub publishers and consumers
 │       ├── Publishers/
 │       │   └── TelemetryPublisherActivity.cs   # PublishTelemetry — sends batch telemetry event
@@ -2139,6 +2144,94 @@ Verify the CSV appeared in **Storage Account → Containers → reports**.
 
 ---
 
+## Application Insights — KQL Queries and Alerts
+
+The project emits structured telemetry via `TelemetryClient`. These KQL queries run in **Application Insights → Logs**. Understanding the table schema and query structure is an AZ-204 exam topic.
+
+### Key Tables
+
+| Table | What it contains |
+|---|---|
+| `customEvents` | `TelemetryClient.TrackEvent(...)` calls — business-level events |
+| `customMetrics` | `TelemetryClient.TrackMetric(...)` calls — numeric measurements |
+| `requests` | HTTP trigger invocations (Functions automatically emits these) |
+| `traces` | `ILogger` output (`LogInformation`, `LogWarning`, etc.) |
+| `exceptions` | Unhandled exceptions and `TelemetryClient.TrackException(...)` |
+| `dependencies` | Outbound calls (Cosmos DB, Storage, Service Bus — auto-instrumented) |
+
+### Query 1 — Abnormal result count per clinic (last 24 h)
+
+```kusto
+customEvents
+| where timestamp > ago(24h)
+| where name == "LabResultsProcessed"
+| extend clinicId       = tostring(customDimensions["ClinicId"])
+| extend abnormalCount  = toint(customDimensions["AbnormalCount"])
+| summarize totalAbnormal = sum(abnormalCount) by clinicId
+| order by totalAbnormal desc
+```
+
+### Query 2 — Average pipeline duration by status
+
+```kusto
+customMetrics
+| where name == "PipelineDurationSeconds"
+| extend status   = tostring(customDimensions["Status"])
+| extend batchId  = tostring(customDimensions["BatchId"])
+| summarize avgDuration = avg(value), p95 = percentile(value, 95) by status
+| order by avgDuration desc
+```
+
+### Query 3 — Failed blob ingestion rate (last 7 days)
+
+```kusto
+customEvents
+| where timestamp > ago(7d)
+| where name in ("LabResultsProcessed", "FileValidationFailed")
+| summarize
+    total   = countif(name == "LabResultsProcessed"),
+    failed  = countif(name == "FileValidationFailed")
+  by bin(timestamp, 1d)
+| extend failureRate = round(todouble(failed) / (total + failed) * 100, 1)
+| order by timestamp asc
+```
+
+### Query 4 — Dead-letter queue findings
+
+```kusto
+traces
+| where timestamp > ago(24h)
+| where message has "Dead-letter"
+| project timestamp, message, severityLevel
+| order by timestamp desc
+```
+
+### Alert Rule — High abnormal result rate
+
+Create a **Log alert** that fires when abnormal results spike:
+
+**Portal:** Application Insights → **Alerts** → **Create** → **Log search**
+
+| Field | Value |
+|---|---|
+| Query | `customEvents \| where name == "LabResultsProcessed" \| extend n = toint(customDimensions["AbnormalCount"]) \| summarize total = sum(n) by bin(timestamp, 1h)` |
+| Aggregation | Sum of `total` |
+| Condition | Greater than `10` |
+| Evaluation frequency | Every 5 minutes |
+| Look-back period | 1 hour |
+| Severity | `2 — Warning` |
+
+**AZ-204 exam distinction — metric alert vs log alert:**
+
+| | Metric alert | Log alert |
+|---|---|---|
+| **Data source** | Pre-aggregated platform metrics (Requests, CPU, etc.) | Arbitrary KQL against raw log data |
+| **Latency** | Near-real-time (1–5 min) | Depends on ingestion + evaluation window |
+| **Cost** | Lower | Higher (query runs on every evaluation) |
+| **Best for** | Known numeric thresholds on standard metrics | Custom business events or complex conditions |
+
+---
+
 ## AZ-204 Coverage Map
 
 This project covers a significant portion of the AZ-204 exam domains. Each item links to the file where the concept is implemented.
@@ -2263,91 +2356,17 @@ This project covers a significant portion of the AZ-204 exam domains. Each item 
 
 ---
 
-## Application Insights — KQL Queries and Alerts
+## What This Project Does Not Cover
 
-The project emits structured telemetry via `TelemetryClient`. These KQL queries run in **Application Insights → Logs**. Understanding the table schema and query structure is an AZ-204 exam topic.
+The following AZ-204 exam topics are not demonstrated by this project and are still testable on the exam.
 
-### Key Tables
-
-| Table | What it contains |
-|---|---|
-| `customEvents` | `TelemetryClient.TrackEvent(...)` calls — business-level events |
-| `customMetrics` | `TelemetryClient.TrackMetric(...)` calls — numeric measurements |
-| `requests` | HTTP trigger invocations (Functions automatically emits these) |
-| `traces` | `ILogger` output (`LogInformation`, `LogWarning`, etc.) |
-| `exceptions` | Unhandled exceptions and `TelemetryClient.TrackException(...)` |
-| `dependencies` | Outbound calls (Cosmos DB, Storage, Service Bus — auto-instrumented) |
-
-### Query 1 — Abnormal result count per clinic (last 24 h)
-
-```kusto
-customEvents
-| where timestamp > ago(24h)
-| where name == "LabResultsProcessed"
-| extend clinicId       = tostring(customDimensions["ClinicId"])
-| extend abnormalCount  = toint(customDimensions["AbnormalCount"])
-| summarize totalAbnormal = sum(abnormalCount) by clinicId
-| order by totalAbnormal desc
-```
-
-### Query 2 — Average pipeline duration by status
-
-```kusto
-customMetrics
-| where name == "PipelineDurationSeconds"
-| extend status   = tostring(customDimensions["Status"])
-| extend batchId  = tostring(customDimensions["BatchId"])
-| summarize avgDuration = avg(value), p95 = percentile(value, 95) by status
-| order by avgDuration desc
-```
-
-### Query 3 — Failed blob ingestion rate (last 7 days)
-
-```kusto
-customEvents
-| where timestamp > ago(7d)
-| where name in ("LabResultsProcessed", "FileValidationFailed")
-| summarize
-    total   = countif(name == "LabResultsProcessed"),
-    failed  = countif(name == "FileValidationFailed")
-  by bin(timestamp, 1d)
-| extend failureRate = round(todouble(failed) / (total + failed) * 100, 1)
-| order by timestamp asc
-```
-
-### Query 4 — Dead-letter queue findings
-
-```kusto
-traces
-| where timestamp > ago(24h)
-| where message has "Dead-letter"
-| project timestamp, message, severityLevel
-| order by timestamp desc
-```
-
-### Alert Rule — High abnormal result rate
-
-Create a **Log alert** that fires when abnormal results spike:
-
-**Portal:** Application Insights → **Alerts** → **Create** → **Log search**
-
-| Field | Value |
-|---|---|
-| Query | `customEvents \| where name == "LabResultsProcessed" \| extend n = toint(customDimensions["AbnormalCount"]) \| summarize total = sum(n) by bin(timestamp, 1h)` |
-| Aggregation | Sum of `total` |
-| Condition | Greater than `10` |
-| Evaluation frequency | Every 5 minutes |
-| Look-back period | 1 hour |
-| Severity | `2 — Warning` |
-
-**AZ-204 exam distinction — metric alert vs log alert:**
-
-| | Metric alert | Log alert |
+| Topic | Exam domain | Note |
 |---|---|---|
-| **Data source** | Pre-aggregated platform metrics (Requests, CPU, etc.) | Arbitrary KQL against raw log data |
-| **Latency** | Near-real-time (1–5 min) | Depends on ingestion + evaluation window |
-| **Cost** | Lower | Higher (query runs on every evaluation) |
-| **Best for** | Known numeric thresholds on standard metrics | Custom business events or complex conditions |
+| **Azure Container Apps** | Compute (25–30%) | ACI is covered; Container Apps (managed K8s, scale-to-zero HTTP) is a separate service |
+| **Cosmos DB non-SQL APIs** | Storage (15–20%) | Only the NoSQL (SQL) API is used; Mongo, Cassandra, Gremlin, and Table APIs are not |
+| **Key Vault keys and certificates** | Security (15–20%) | Only Key Vault secrets are demonstrated; key operations and certificate lifecycle are not |
+| **Microsoft Graph** | Security (15–20%) | MSAL token acquisition is demonstrated; calling the Graph API is not |
+| **Azure Static Website Hosting** | Storage (15–20%) | Azure Storage static site hosting is not used |
 
 ---
 

@@ -49,7 +49,8 @@ public static class AppConfig
         public const string PublishBatchComplete     = Prefix + "PublishBatchComplete";
         public const string PublishAbnormalAlert     = Prefix + "PublishAbnormalAlert";
         public const string PublishAbnormalEvent     = Prefix + "PublishAbnormalEvent";
-        public const string PublishTelemetry = Prefix + "PublishTelemetry";
+        public const string PublishTelemetry    = Prefix + "PublishTelemetry";
+        public const string NotifyFailureQueue  = Prefix + "NotifyFailureQueue";
     }
 
     public static class Redis
@@ -98,6 +99,11 @@ public static class AppConfig
             public const string ClinicalAlertReceived  = "ClinicalAlertReceived";
             public const string CriticalAlertReceived  = "CriticalAlertReceived";
         }
+    }
+
+    public static class Queue
+    {
+        public const string FailuresQueue = "lab-results-failures";
     }
 
     public class EventHub

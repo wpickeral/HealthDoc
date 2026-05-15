@@ -4,6 +4,7 @@ using Azure.Messaging.ServiceBus;
 using Azure.Storage.Blobs;
 using Azure;
 using Azure.Messaging.EventHubs.Producer;
+using Azure.Storage.Queues;
 using HealthDoc;
 using StackExchange.Redis;
 using Microsoft.Azure.Cosmos;
@@ -75,6 +76,14 @@ builder.Services.AddSingleton(sp =>
     var connection = Environment.GetEnvironmentVariable(AppConfig.EventHub.Connection)
                      ?? throw new InvalidOperationException($"{AppConfig.EventHub.Connection} is not configured");
     return new EventHubProducerClient(connection, AppConfig.EventHub.Name);
+});
+
+// QueueClient — reuses StorageConnectionString; targets the failures queue directly
+builder.Services.AddSingleton(sp =>
+{
+    var connection = Environment.GetEnvironmentVariable(AppConfig.Blob.Connection)
+        ?? throw new InvalidOperationException($"{AppConfig.Blob.Connection} is not configured");
+    return new QueueClient(connection, AppConfig.Queue.FailuresQueue);
 });
 
 builder.Build().Run();
