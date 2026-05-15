@@ -67,8 +67,7 @@ public class LabResultOrchestrator
             summary.BatchId, summary.TotalRecords, summary.AbnormalCount);
         
         // Publish a telemetry event to Event Hubs
-        
-        
+        await context.CallActivityAsync(AppConfig.Activities.PublishTelemetry, summary);
 
         // Event Grid — publish custom event immediately when abnormal results are detected.
         // Fires before the monitor loop so downstream subscribers get early notification

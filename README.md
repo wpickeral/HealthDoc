@@ -2000,7 +2000,33 @@ Both counts should be non-zero. A gap between Published and Delivered indicates 
 
 ---
 
-### Step 7 — Validate Redis cache
+### Step 7 — Validate Event Hubs
+
+After `StoreSummary` completes, `TelemetryPublisherActivity` sends one event to the `lab-results-telemetry` event hub. `EventHubAnalyticsProcessor` (consumer group `pipeline-analytics`) reads it and logs the event.
+
+**Confirm the producer fired:**
+
+```kql
+traces
+| where cloud_RoleName == "health-doc"
+| where message has "Event Hub event received"
+| order by timestamp desc
+| take 10
+```
+
+Each row corresponds to one event received by `EventHubAnalyticsProcessor`. If the row appears, both the producer (activity) and the consumer (trigger) are wired correctly.
+
+**Confirm throughput metrics in the portal:**
+
+Event Hubs Namespace → **Metrics** → select **Incoming Messages** and **Outgoing Messages**. Both should show a non-zero count matching the number of batches processed.
+
+**Consumer group lag (optional):**
+
+Event Hubs Namespace → event hub → **Consumer Groups** → `pipeline-analytics`. If the Function host is running, lag should be 0 (all events consumed). A non-zero lag means the trigger is behind — check for function errors in App Insights.
+
+---
+
+### Step 9 — Validate Redis cache
 
 After a successful pipeline run, the `results:{clinicId}` key is invalidated by `StoreRecords`. Query the results endpoint to prime the cache:
 
@@ -2024,7 +2050,7 @@ The first call logs `Cache miss: results:CLINIC-01`; the second logs `Cache hit:
 
 ---
 
-### Step 8 — Validate in Application Insights
+### Step 10 — Validate in Application Insights
 
 Application Insights is the primary observability tool for the pipeline. All custom business events and structured logs are captured there.
 
@@ -2092,7 +2118,7 @@ An empty result means the pipeline completed without unhandled exceptions.
 
 ---
 
-### Step 9 — Run the report generator
+### Step 11 — Run the report generator
 
 After the pipeline has processed at least one batch, run the report generator to confirm it can read from Cosmos and write to Blob Storage:
 

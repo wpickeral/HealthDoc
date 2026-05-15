@@ -160,7 +160,15 @@ public static class EventHub
 }
 ```
 
-**Step 7 — Add to `local.settings.json`:**
+**Step 7 — Wire the activity into `LabResultOrchestrator.cs`** (after `StoreSummaryAsync`):
+```csharp
+var summary = await StoreSummaryAsync(context, processedRecords);
+
+// Publish a telemetry event to Event Hubs
+await context.CallActivityAsync(AppConfig.Activities.PublishTelemetry, summary);
+```
+
+**Step 8 — Add to `local.settings.json`:**
 ```json
 "EventHubConnectionString": "<event-hub-namespace-connection-string>"
 ```
