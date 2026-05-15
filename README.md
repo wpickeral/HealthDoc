@@ -2004,17 +2004,16 @@ Both counts should be non-zero. A gap between Published and Delivered indicates 
 
 After `StoreSummary` completes, `TelemetryPublisherActivity` sends one event to the `lab-results-telemetry` event hub. `EventHubAnalyticsProcessor` (consumer group `pipeline-analytics`) reads it and logs the event.
 
-**Confirm the producer fired:**
+**Confirm the consumer fired:**
 
 ```kql
-traces
-| where cloud_RoleName == "health-doc"
-| where message has "Event Hub event received"
+requests
+| where name contains "EventHubAnalyticsProcessor"
 | order by timestamp desc
 | take 10
 ```
 
-Each row corresponds to one event received by `EventHubAnalyticsProcessor`. If the row appears, both the producer (activity) and the consumer (trigger) are wired correctly.
+Each row is one trigger invocation. If rows appear, both the producer (activity) and consumer (trigger) are wired correctly. Function invocations show in the `requests` table — do not use `traces` for this check, as `LogInformation` messages may be dropped by sampling before they reach App Insights.
 
 **Confirm throughput metrics in the portal:**
 
