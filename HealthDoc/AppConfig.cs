@@ -49,6 +49,7 @@ public static class AppConfig
         public const string PublishBatchComplete     = Prefix + "PublishBatchComplete";
         public const string PublishAbnormalAlert     = Prefix + "PublishAbnormalAlert";
         public const string PublishAbnormalEvent     = Prefix + "PublishAbnormalEvent";
+        public const string PublishTelemetry = Prefix + "PublishTelemetry";
     }
 
     public static class Redis
@@ -97,5 +98,12 @@ public static class AppConfig
             public const string ClinicalAlertReceived  = "ClinicalAlertReceived";
             public const string CriticalAlertReceived  = "CriticalAlertReceived";
         }
+    }
+
+    public class EventHub
+    {
+        public const string Connection     = "EventHubConnectionString";
+        public const string Name           = "lab-results-telemetry";
+        public const string ConsumerGroup  = "pipeline-analytics";
     }
 }

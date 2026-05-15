@@ -2,7 +2,7 @@ using Azure.Messaging.ServiceBus;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.ServiceBus;
+namespace HealthDoc.ServiceBus.Handlers;
 
 public class ServiceBusDeadLetterMonitor
 {

@@ -5,7 +5,7 @@ using Microsoft.DurableTask;
 using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Events;
+namespace HealthDoc.Triggers;
 
 public class LabResultIngestionTrigger
 {

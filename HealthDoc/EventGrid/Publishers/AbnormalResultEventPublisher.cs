@@ -4,7 +4,7 @@ using HealthDoc.Models;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Events;
+namespace HealthDoc.EventGrid.Publishers;
 
 public class AbnormalResultEventPublisher
 {

@@ -3,6 +3,7 @@ using Azure.Messaging.EventGrid;
 using Azure.Messaging.ServiceBus;
 using Azure.Storage.Blobs;
 using Azure;
+using Azure.Messaging.EventHubs.Producer;
 using HealthDoc;
 using StackExchange.Redis;
 using Microsoft.Azure.Cosmos;
@@ -66,6 +67,14 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     var connection = Environment.GetEnvironmentVariable(AppConfig.Redis.Connection)
         ?? throw new InvalidOperationException($"{AppConfig.Redis.Connection} is not configured");
     return ConnectionMultiplexer.Connect(connection);
+});
+
+
+builder.Services.AddSingleton(sp =>
+{
+    var connection = Environment.GetEnvironmentVariable(AppConfig.EventHub.Connection)
+                     ?? throw new InvalidOperationException($"{AppConfig.EventHub.Connection} is not configured");
+    return new EventHubProducerClient(connection, AppConfig.EventHub.Name);
 });
 
 builder.Build().Run();

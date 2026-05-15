@@ -3,7 +3,7 @@ using Microsoft.ApplicationInsights;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
-namespace HealthDoc.Events;
+namespace HealthDoc.EventGrid.Consumers;
 
 public class DownstreamSystemNotifier
 {

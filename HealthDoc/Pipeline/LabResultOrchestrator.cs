@@ -65,6 +65,10 @@ public class LabResultOrchestrator
         logger.LogInformation(
             "Batch {BatchId} stored — {Total} records, {Abnormal} abnormal — starting confirmation monitor",
             summary.BatchId, summary.TotalRecords, summary.AbnormalCount);
+        
+        // Publish a telemetry event to Event Hubs
+        
+        
 
         // Event Grid — publish custom event immediately when abnormal results are detected.
         // Fires before the monitor loop so downstream subscribers get early notification
