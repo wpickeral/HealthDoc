@@ -174,20 +174,20 @@ HealthDoc/
 │   │   └── FailedLabFilesEndpoint.cs           # GET /api/blobs/failed → blob list + SAS URLs
 │   ├── Pipeline/                               # Orchestrator + activities (core processing)
 │   │   ├── LabResultOrchestrator.cs            # Orchestrator — all four Durable patterns
-│   │   ├── FileValidator.cs                    # ValidateFile — checks headers and data rows
-│   │   ├── FileParser.cs                       # ParseFile — CSV → List<LabRecord>
-│   │   ├── LabRecordProcessor.cs               # ProcessRecord — enriches one record
-│   │   ├── SummaryUpdater.cs                   # StoreSummary — Cosmos DB output binding
-│   │   ├── StorageConfirmationValidator.cs     # CheckStorageConfirmation — Cosmos SDK query
-│   │   ├── TimeoutSummaryWriter.cs             # WriteTimeoutSummary — persists timed-out status
-│   │   ├── MoveProcessedFile.cs                # MoveFile — server-side blob copy + delete
-│   │   └── PatientResultUpdater.cs             # StoreRecords — Cosmos write + Redis invalidation
+│   │   ├── FileValidatorActivity.cs            # ValidateFile — checks headers and data rows
+│   │   ├── FileParserActivity.cs               # ParseFile — CSV → List<LabRecord>
+│   │   ├── LabRecordProcessorActivity.cs       # ProcessRecord — enriches one record
+│   │   ├── SummaryUpdaterActivity.cs           # StoreSummary — Cosmos DB output binding
+│   │   ├── StorageConfirmationValidatorActivity.cs  # CheckStorageConfirmation — Cosmos SDK query
+│   │   ├── TimeoutSummaryWriterActivity.cs     # WriteTimeoutSummary — persists timed-out status
+│   │   ├── MoveProcessedFileActivity.cs        # MoveFile — server-side blob copy + delete
+│   │   └── PatientResultUpdaterActivity.cs     # StoreRecords — Cosmos write + Redis invalidation
 │   ├── Triggers/                               # Entry-point triggers (external → pipeline)
 │   │   └── LabResultIngestionTrigger.cs        # BlobTrigger → schedules orchestration
 │   ├── ServiceBus/                             # Service Bus publishers and consumers
 │   │   ├── Publishers/                         # Outbound — send messages to queues/topics
-│   │   │   ├── BatchCompletePublisher.cs       # PublishBatchComplete → notifications queue
-│   │   │   └── AbnormalAlertPublisher.cs       # PublishAbnormalAlert → alerts topic
+│   │   │   ├── BatchCompletePublisherActivity.cs    # PublishBatchComplete → notifications queue
+│   │   │   └── AbnormalAlertPublisherActivity.cs    # PublishAbnormalAlert → alerts topic
 │   │   └── Consumers/                          # Inbound — triggered by incoming messages
 │   │       ├── ServiceBusLabResultNotifier.cs  # ServiceBusTrigger (queue) → App Insights event
 │   │       ├── ClinicalAlertHandler.cs         # ServiceBusTrigger (clinical-alerts sub)
@@ -195,13 +195,13 @@ HealthDoc/
 │   │       └── ServiceBusDeadLetterMonitor.cs  # TimerTrigger → peeks DLQ every 5 minutes
 │   ├── EventGrid/                              # Event Grid publishers and consumers
 │   │   ├── Publishers/
-│   │   │   └── AbnormalResultEventPublisher.cs # PublishAbnormalEvent — custom CloudEvent
+│   │   │   └── AbnormalResultEventPublisherActivity.cs  # PublishAbnormalEvent — custom CloudEvent
 │   │   └── Consumers/
 │   │       ├── EventGridLabResultAuditor.cs    # EventGridTrigger (BlobCreated) → AuditLog
 │   │       └── DownstreamSystemNotifier.cs     # CosmosDBTrigger → App Insights telemetry
 │   └── EventHub/                               # Event Hub publishers and consumers
 │       ├── Publishers/
-│       │   └── TelemetryPublisher.cs           # PublishTelemetry — sends batch telemetry event
+│       │   └── TelemetryPublisherActivity.cs   # PublishTelemetry — sends batch telemetry event
 │       └── Consumers/
 │           └── EventHubAnalyticsProcessor.cs   # EventHubTrigger (pipeline-analytics group)
 │
