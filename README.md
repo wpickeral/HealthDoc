@@ -168,7 +168,7 @@ HealthDoc/
 │   ├── AppConfig.cs                            # Centralized const strings for all services
 │   ├── host.json                               # Application Insights sampling config
 │   ├── Http/                                   # HTTP triggers
-│   │   ├── UploadLabResultsEndpoint.cs         # POST /api/upload → blob write + starts orchestration → instanceId
+│   │   ├── UploadLabResultsEndpoint.cs         # POST /api/upload → blob write + starts orchestration
 │   │   ├── BatchStatusEndpoint.cs              # GET /api/status/{instanceId} — async HTTP API
 │   │   ├── LabResultsEndpoint.cs               # GET /api/results/{clinicId} — Redis → Cosmos
 │   │   └── FailedLabFilesEndpoint.cs           # GET /api/blobs/failed → blob list + SAS URLs
@@ -182,18 +182,28 @@ HealthDoc/
 │   │   ├── TimeoutSummaryWriter.cs             # WriteTimeoutSummary — persists timed-out status
 │   │   ├── MoveProcessedFile.cs                # MoveFile — server-side blob copy + delete
 │   │   └── PatientResultUpdater.cs             # StoreRecords — Cosmos write + Redis invalidation
-│   ├── ServiceBus/                             # Service Bus publishers and subscribers
-│   │   ├── BatchCompletePublisher.cs           # PublishBatchComplete — queue output binding
-│   │   ├── AbnormalAlertPublisher.cs           # PublishAbnormalAlert — topic output binding
-│   │   ├── ServiceBusLabResultNotifier.cs      # ServiceBusTrigger (queue) → App Insights event
-│   │   ├── ClinicalAlertHandler.cs             # ServiceBusTrigger (clinical-alerts sub) → App Insights event
-│   │   ├── CriticalAlertHandler.cs             # ServiceBusTrigger (critical-alerts sub, AbnormalCount > 5) → LogWarning
-│   │   └── ServiceBusDeadLetterMonitor.cs      # TimerTrigger → peeks DLQ every 5 minutes
-│   └── Events/                                 # Blob, EventGrid, and Cosmos triggers + Event Grid publisher
-│       ├── LabResultIngestionTrigger.cs        # BlobTrigger → schedules orchestration (inactive on Flex Consumption)
-│       ├── EventGridLabResultAuditor.cs        # EventGridTrigger (BlobCreated) → AuditLog
-│       ├── AbnormalResultEventPublisher.cs     # PublishAbnormalEvent — Event Grid custom event
-│       └── DownstreamSystemNotifier.cs         # CosmosDBTrigger → App Insights telemetry
+│   ├── Triggers/                               # Entry-point triggers (external → pipeline)
+│   │   └── LabResultIngestionTrigger.cs        # BlobTrigger → schedules orchestration
+│   ├── ServiceBus/                             # Service Bus publishers and consumers
+│   │   ├── Publishers/                         # Outbound — send messages to queues/topics
+│   │   │   ├── BatchCompletePublisher.cs       # PublishBatchComplete → notifications queue
+│   │   │   └── AbnormalAlertPublisher.cs       # PublishAbnormalAlert → alerts topic
+│   │   └── Consumers/                          # Inbound — triggered by incoming messages
+│   │       ├── ServiceBusLabResultNotifier.cs  # ServiceBusTrigger (queue) → App Insights event
+│   │       ├── ClinicalAlertHandler.cs         # ServiceBusTrigger (clinical-alerts sub)
+│   │       ├── CriticalAlertHandler.cs         # ServiceBusTrigger (critical-alerts sub, AbnormalCount > 5)
+│   │       └── ServiceBusDeadLetterMonitor.cs  # TimerTrigger → peeks DLQ every 5 minutes
+│   ├── EventGrid/                              # Event Grid publishers and consumers
+│   │   ├── Publishers/
+│   │   │   └── AbnormalResultEventPublisher.cs # PublishAbnormalEvent — custom CloudEvent
+│   │   └── Consumers/
+│   │       ├── EventGridLabResultAuditor.cs    # EventGridTrigger (BlobCreated) → AuditLog
+│   │       └── DownstreamSystemNotifier.cs     # CosmosDBTrigger → App Insights telemetry
+│   └── EventHub/                               # Event Hub publishers and consumers
+│       ├── Publishers/
+│       │   └── TelemetryPublisher.cs           # PublishTelemetry — sends batch telemetry event
+│       └── Consumers/
+│           └── EventHubAnalyticsProcessor.cs   # EventHubTrigger (pipeline-analytics group)
 │
 ├── HealthDoc.Models/                           # Shared models — no Azure dependency
 │   ├── LabRecord.cs                            # CSV row + static From(string[]) factory
